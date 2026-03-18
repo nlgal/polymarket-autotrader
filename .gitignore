@@ -1,0 +1,29 @@
+# Environment — NEVER commit API keys
+.env
+*.env
+
+# State — contains portfolio data, reset on each user's setup
+state.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
