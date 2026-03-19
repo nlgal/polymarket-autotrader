@@ -1562,8 +1562,13 @@ def main():
             log("\nStopped by user. Goodbye.", Fore.WHITE)
             break
         except Exception as e:
+            tb = traceback.format_exc()
             log(f"Cycle error: {e}", Fore.RED)
-            traceback.print_exc()
+            log(tb, Fore.RED)
+            short = tb.strip().splitlines()
+            # Send last 15 lines of traceback to Telegram so we can diagnose
+            tb_snippet = "\n".join(short[-15:])
+            tg(f"🔴 <b>Cycle error</b>\n<code>{str(e)[:200]}</code>\n\n<code>{tb_snippet[:800]}</code>")
             log_mistake("Cycle error", "Unhandled exception", str(e)[:150], "Add specific handling for this error type")
             time.sleep(60)
 
