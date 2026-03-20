@@ -55,6 +55,56 @@ def tg(msg: str, silent: bool = False):
 
 # ── Intelligence System ───────────────────────────────────────────────────────
 INTEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intelligence")
+# ── Market assessment cache ───────────────────────────────────────────────────
+MARKET_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intelligence", "market_cache.json")
+MARKET_CACHE_TTL  = 7200   # seconds — reuse cached score if price unchanged for 2h
+_market_cache: dict = {}
+
+def _load_market_cache():
+    """Load market cache from disk into memory."""
+    global _market_cache
+    try:
+        if os.path.exists(MARKET_CACHE_FILE):
+            _market_cache = json.load(open(MARKET_CACHE_FILE))
+    except Exception:
+        _market_cache = {}
+
+def _save_market_cache():
+    """Persist market cache to disk."""
+    try:
+        os.makedirs(os.path.dirname(MARKET_CACHE_FILE), exist_ok=True)
+        # Prune entries older than 24h to keep file small
+        cutoff = time.time() - 86400
+        pruned = {k: v for k, v in _market_cache.items() if v.get("ts", 0) > cutoff}
+        _market_cache.clear()
+        _market_cache.update(pruned)
+        json.dump(_market_cache, open(MARKET_CACHE_FILE, "w"))
+    except Exception:
+        pass
+
+def _get_cached_score(market):
+    """Return cached score if valid (same price, within TTL). None otherwise."""
+    key = market.get("condition_id") or market.get("question", "")[:80]
+    entry = _market_cache.get(key)
+    if not entry:
+        return None
+    age = time.time() - entry.get("ts", 0)
+    cached_price = entry.get("yes_price")
+    current_price = market.get("yes_price")
+    if age < MARKET_CACHE_TTL and abs((cached_price or 0) - (current_price or 0)) < 0.005:
+        return entry.get("result")
+    return None
+
+def _set_cached_score(market, result):
+    """Store a market score in the cache."""
+    key = market.get("condition_id") or market.get("question", "")[:80]
+    _market_cache[key] = {
+        "ts": time.time(),
+        "yes_price": market.get("yes_price"),
+        "result": result,
+    }
+
+
 
 _INTEL_CACHE: dict = {"soul": None, "lessons": None}
 
@@ -739,6 +789,12 @@ def score_market(market, mode="NORMAL"):
         return {**market, "action": "PASS", "edge": 0, "confidence": "low",
                 "reasoning": "Blacklisted market type — no model edge"}
 
+    # Check market assessment cache — skip API calls if price unchanged within TTL
+    cached = _get_cached_score(market)
+    if cached is not None:
+        log(f"  [CACHE HIT] {market.get('question','')[:55]} edge={cached.get('edge',0):+.3f}", Fore.CYAN)
+        return {**market, **cached}
+
 
     news = ""
     pplx_key = os.environ.get("PERPLEXITY_API_KEY", "").strip()
@@ -820,6 +876,7 @@ If UW smart_money or insider_trades are high (>3) and align with your direction,
         result["edge"] = round(float(result["true_probability"]) - market["yes_price"], 4)
         if abs(result["edge"]) <= MIN_EDGE or result["confidence"] != "high":
             result["action"] = "PASS"
+        _set_cached_score(market, result)  # cache this assessment
         return {**market, **result}
     except Exception as e:
         return {**market, "action": "PASS", "edge": 0, "confidence": "low", "reasoning": str(e)[:100]}
@@ -1333,6 +1390,7 @@ If uncertain, return []"""
 
 def run_cycle(client, state):
     _read_intel_files()  # refresh soul/lessons cache once per cycle
+    _load_market_cache()  # load market score cache from disk
     log("─" * 60)
     log(f"Starting scan cycle — {datetime.now().strftime('%H:%M:%S')}", Fore.CYAN)
 
@@ -1375,6 +1433,7 @@ def run_cycle(client, state):
 
     # ── 6. Score (pass mode to restrict in Recovery) ──────────────────────────
     scored = score_batch(all_markets[:TOP_MARKETS_TO_SCORE], mode=mode)
+    _save_market_cache()  # persist updated scores to disk
 
     # Build token lookup for stale order resubmission
     markets_by_token = {}
