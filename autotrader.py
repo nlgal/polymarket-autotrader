@@ -56,31 +56,33 @@ def tg(msg: str, silent: bool = False):
 # ── Intelligence System ───────────────────────────────────────────────────────
 INTEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intelligence")
 
-def load_lessons() -> str:
-    """Load key lessons for injection into AI prompts."""
+_INTEL_CACHE: dict = {"soul": None, "lessons": None}
+
+def _read_intel_files():
+    """Read soul.md + lessons.md from disk into cache. Call once per cycle."""
     try:
-        path = os.path.join(INTEL_DIR, "lessons.md")
-        if os.path.exists(path):
-            txt = open(path).read()
-            lines = [l.strip() for l in txt.splitlines()
-                     if l.strip() and not l.strip().startswith("#") and len(l.strip()) > 20]
-            return "\n".join(lines[:12])
+        p = os.path.join(INTEL_DIR, "soul.md")
+        txt = open(p).read() if os.path.exists(p) else ""
+        lines = [l.strip() for l in txt.splitlines() if l.strip() and l.strip()[0].isdigit()]
+        _INTEL_CACHE["soul"] = "\n".join(lines[:10])
     except Exception:
-        pass
-    return ""
+        _INTEL_CACHE["soul"] = ""
+    try:
+        p = os.path.join(INTEL_DIR, "lessons.md")
+        txt = open(p).read() if os.path.exists(p) else ""
+        lines = [l.strip() for l in txt.splitlines()
+                 if l.strip() and not l.strip().startswith("#") and len(l.strip()) > 20]
+        _INTEL_CACHE["lessons"] = "\n".join(lines[:12])
+    except Exception:
+        _INTEL_CACHE["lessons"] = ""
+
+def load_lessons() -> str:
+    if _INTEL_CACHE["lessons"] is None: _read_intel_files()
+    return _INTEL_CACHE["lessons"] or ""
 
 def load_soul() -> str:
-    """Load core principles for injection into AI prompts."""
-    try:
-        path = os.path.join(INTEL_DIR, "soul.md")
-        if os.path.exists(path):
-            txt = open(path).read()
-            lines = [l.strip() for l in txt.splitlines()
-                     if l.strip() and l.strip()[0].isdigit()]
-            return "\n".join(lines[:10])
-    except Exception:
-        pass
-    return ""
+    if _INTEL_CACHE["soul"] is None: _read_intel_files()
+    return _INTEL_CACHE["soul"] or ""
 
 def log_mistake(category: str, what: str, why: str, rule: str):
     """Append a mistake to intelligence/mistakes.md and notify via Telegram."""
@@ -184,6 +186,18 @@ STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.jso
 RISK_TRADE_PCT  = {"NORMAL": 0.010, "RECOVERY": 0.005, "EXPANSION": 0.0125, "PAUSED": 0.0}
 RISK_OPEN_PCT   = {"NORMAL": 0.030, "RECOVERY": 0.015, "EXPANSION": 0.040,  "PAUSED": 0.0}
 MAX_ORDERS      = {"NORMAL": 8,     "RECOVERY": 4,     "EXPANSION": 10,     "PAUSED": 0}
+# ── Market blacklist — skip markets with no real model edge ──────────────────
+MARKET_BLACKLIST_KEYWORDS = [
+    "tweets", "tweet", "retweet", "elon musk post",
+    "how many times will elon", "posts from march", "# of tweets",
+    "number of tweets", "followers", "subscribers",
+    "youtube views", "tiktok", "instagram posts",
+]
+
+def is_blacklisted(question: str) -> bool:
+    q = question.lower()
+    return any(kw in q for kw in MARKET_BLACKLIST_KEYWORDS)
+
 SIZE_MIN        = {"NORMAL": 50,    "RECOVERY": 25,    "EXPANSION": 75,     "PAUSED": 0}
 SIZE_MAX        = {"NORMAL": 150,   "RECOVERY": 75,    "EXPANSION": 200,    "PAUSED": 0}
 
@@ -720,6 +734,11 @@ def score_market(market, mode="NORMAL"):
     if mode == "RECOVERY" and market.get("volume", 0) < 50000:
         return {**market, "action": "PASS", "edge": 0, "confidence": "low",
                 "reasoning": "Recovery mode: low-volume market skipped"}
+    # Skip blacklisted market types — no real model edge on these
+    if is_blacklisted(market.get("question", "") + " " + market.get("title", "")):
+        return {**market, "action": "PASS", "edge": 0, "confidence": "low",
+                "reasoning": "Blacklisted market type — no model edge"}
+
 
     news = ""
     pplx_key = os.environ.get("PERPLEXITY_API_KEY", "").strip()
@@ -773,11 +792,22 @@ Respond with ONLY valid JSON:
 Rules: BUY_YES if edge>0.07 and confidence=high. BUY_NO if edge<-0.07 and confidence=high. PASS otherwise.
 If UW smart_money or insider_trades are high (>3) and align with your direction, increase confidence. If they contradict your direction, lower confidence or PASS."""
 
+    sys_text = (
+        "You are a quantitative prediction market trader. Output ONLY valid JSON.\n"
+        "Keys: true_probability, confidence, reasoning, edge, action.\n"
+    )
+    _soul = load_soul()
+    _less = load_lessons()
+    if _soul: sys_text += "\nCORE PRINCIPLES:\n" + _soul + "\n"
+    if _less: sys_text += "\nLEARNED LESSONS:\n" + _less + "\n"
+
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        resp = client.messages.create(
+        if not hasattr(score_market, "_ac") or score_market._ac is None:
+            score_market._ac = anthropic.Anthropic(api_key=api_key)
+        resp = score_market._ac.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=300,
+            system=[{"type": "text", "text": sys_text, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
         )
@@ -864,14 +894,14 @@ def place_trade(client, market, action, size_usdc):
 
 # ── Size Calculator ───────────────────────────────────────────────────────────
 
-def calculate_size(edge, mode, equity_now, deployed):
+def calculate_size(edge, mode, equity_now, deployed, market_price=0.5):
     """
     Kelly-inspired sizing within mode-defined min/max bounds.
     The RISK_OPEN_PCT budget scales with equity at higher balances (e.g. $5k+).
     At small balances (<$5k) we use fixed SIZE_MIN/MAX directly so trades always fire.
     """
     # Hard cap: never deploy more than MAX_PORTFOLIO_EXPOSURE total
-    MAX_PORTFOLIO_EXPOSURE = 700
+    MAX_PORTFOLIO_EXPOSURE = int(__import__('os').environ.get('MAX_PORTFOLIO_EXPOSURE', '2500'))
     remaining_capacity = MAX_PORTFOLIO_EXPOSURE - deployed
     if remaining_capacity < SIZE_MIN[mode]:
         return 0
@@ -1302,6 +1332,7 @@ If uncertain, return []"""
 # ── Main Cycle ────────────────────────────────────────────────────────────────
 
 def run_cycle(client, state):
+    _read_intel_files()  # refresh soul/lessons cache once per cycle
     log("─" * 60)
     log(f"Starting scan cycle — {datetime.now().strftime('%H:%M:%S')}", Fore.CYAN)
 
@@ -1471,7 +1502,7 @@ def run_cycle(client, state):
         log(f"  {action} | edge={edge:+.3f} | {m['question'][:55]}", Fore.GREEN)
         log(f"    Reasoning: {m.get('reasoning','')[:100]}")
 
-        size = calculate_size(edge, mode, equity_now, stats["deployed"])
+        size = calculate_size(edge, mode, equity_now, stats["deployed"], market_price=m.get("price", 0.5))
         size = min(size, available)  # Never exceed available free balance
         size = min(size, MAX_PER_MARKET_USDC - already_in)  # Per-market cap
         if size < SIZE_MIN[mode]:
