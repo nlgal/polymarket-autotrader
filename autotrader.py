@@ -200,6 +200,237 @@ def review_patterns():
     except Exception as e:
         log("[INTELLIGENCE] Pattern review failed: {}".format(e), Fore.YELLOW)
 
+
+# =============================================================================
+#  SELF-LEARNING SYSTEM — autonomous research loop
+#  Architecture: log outcomes -> record resolutions -> Claude reflects -> tune
+# =============================================================================
+
+def _load_results() -> list:
+    try:
+        if os.path.exists(RESULTS_FILE):
+            with open(RESULTS_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+def _save_results(results: list):
+    try:
+        os.makedirs(os.path.dirname(RESULTS_FILE), exist_ok=True)
+        with open(RESULTS_FILE, "w") as f:
+            json.dump(results, f, indent=2)
+    except Exception as e:
+        log(f"[LEARN] Could not save results: {e}", Fore.YELLOW)
+
+def _classify_market(question: str) -> str:
+    q = question.lower()
+    if any(k in q for k in ["bitcoin", "ethereum", "crypto", "btc", "eth"]):
+        return "crypto"
+    if any(k in q for k in ["oil", "gold", "silver", "commodity"]):
+        return "commodity"
+    if any(k in q for k in ["iran", "war", "military", "nato", "russia", "ukraine", "israel", "china"]):
+        return "geopolitical"
+    if any(k in q for k in ["trump", "election", "president", "congress", "senate", "fed", "policy"]):
+        return "politics"
+    if any(k in q for k in ["greenland", "annex", "acquire"]):
+        return "geopolitical"
+    return "other"
+
+def log_trade_outcome(market: dict, action: str, size_usdc: float, edge: float, receipt: dict):
+    """Record a placed trade for outcome tracking."""
+    try:
+        results = _load_results()
+        entry = {
+            "ts_placed":   datetime.now(timezone.utc).isoformat(),
+            "question":    market.get("question", "")[:120],
+            "action":      action,
+            "edge":        round(edge, 4),
+            "size_usdc":   round(size_usdc, 2),
+            "yes_price":   market.get("yes_price", 0.5),
+            "no_price":    market.get("no_price", 0.5),
+            "market_type": _classify_market(market.get("question", "")),
+            "order_id":    receipt.get("orderID", ""),
+            "token_id":    market.get("yes_token_id", "") if action == "BUY_YES" else market.get("no_token_id", ""),
+            "status":      "open",
+            "pnl":         None,
+            "resolved_at": None,
+            "reasoning":   market.get("reasoning", "")[:200],
+        }
+        results.append(entry)
+        _save_results(results)
+    except Exception as e:
+        log(f"[LEARN] log_trade_outcome error: {e}", Fore.YELLOW)
+
+def record_resolved_trades():
+    """Match recent REDEEMs against open trades, record final P&L."""
+    try:
+        results = _load_results()
+        open_trades = [r for r in results if r.get("status") == "open"]
+        if not open_trades:
+            return
+        resp = requests.get(
+            f"https://data-api.polymarket.com/activity?user={FUNDER}&limit=50",
+            timeout=10
+        )
+        if resp.status_code != 200:
+            return
+        activity = resp.json()
+        redeems = [a for a in activity if a.get("type") in ("REDEEM", "SELL")]
+        changed = False
+        for trade in results:
+            if trade.get("status") != "open":
+                continue
+            q_lower = trade["question"].lower()
+            for r in redeems:
+                r_title = r.get("title", "").lower()
+                if len(q_lower) > 10 and (q_lower[:40] in r_title or r_title[:40] in q_lower):
+                    usdc = r.get("usdcSize", 0) or 0
+                    cost = trade["size_usdc"]
+                    pnl  = round(usdc - cost, 2)
+                    trade["status"]      = "resolved"
+                    trade["pnl"]         = pnl
+                    trade["resolved_at"] = datetime.fromtimestamp(
+                        r["timestamp"], tz=timezone.utc).isoformat()
+                    trade["return_pct"]  = round(pnl / cost * 100, 1) if cost > 0 else 0
+                    changed = True
+                    _q = trade["question"]; _rp = trade.get("return_pct", 0)
+                    log(f"[LEARN] Resolved: {_q[:50]} | P&L ${pnl:+.2f} ({_rp:+.1f}%)", Fore.MAGENTA)
+                    break
+        if changed:
+            _save_results(results)
+    except Exception as e:
+        log(f"[LEARN] record_resolved_trades error: {e}", Fore.YELLOW)
+
+def reflect_and_improve():
+    """Reflect on resolved trades, rewrite lessons.md, auto-tune MIN_EDGE."""
+    try:
+        results  = _load_results()
+        resolved = [r for r in results if r.get("status") == "resolved" and r.get("pnl") is not None]
+        if len(resolved) < 10:
+            return
+        state = load_state()
+        last_count = state.get("last_reflect_count", 0)
+        if len(resolved) < last_count + 5:
+            return
+        log(f"[LEARN] Reflecting on {len(resolved)} resolved trades...", Fore.MAGENTA)
+
+        by_cat  = {}
+        by_edge = {}
+        wins = 0
+        for r in resolved:
+            pnl  = r.get("pnl", 0) or 0
+            won  = pnl > 0
+            wins += 1 if won else 0
+            cat  = r.get("market_type", "other")
+            edge = abs(r.get("edge", 0))
+            ebuck = str(int(edge * 100 // 5) * 5) + "pct"
+            by_cat.setdefault(cat,  {"w": 0, "l": 0, "pnl": 0.0})
+            by_edge.setdefault(ebuck, {"w": 0, "l": 0, "pnl": 0.0, "min_edge": int(edge * 100 // 5) * 5})
+            key = "w" if won else "l"
+            by_cat[cat][key]   += 1
+            by_cat[cat]["pnl"] += pnl
+            by_edge[ebuck][key]   += 1
+            by_edge[ebuck]["pnl"] += pnl
+
+        total_pnl = sum(r.get("pnl", 0) or 0 for r in resolved)
+        win_rate  = wins / len(resolved) * 100
+        recent_10 = sorted(resolved, key=lambda x: x.get("resolved_at", ""), reverse=True)[:10]
+
+        lines = [
+            f"TRADE PERFORMANCE SUMMARY ({len(resolved)} resolved trades)",
+            f"Win rate: {win_rate:.1f}% | Total P&L: ${total_pnl:+.2f}",
+            "",
+            "BY MARKET TYPE:",
+        ]
+        for cat, s in by_cat.items():
+            total_c = s["w"] + s["l"]
+            wr_c = s["w"] / total_c * 100 if total_c else 0
+            w_c = s["w"]; l_c = s["l"]; pnl_c = s["pnl"]
+            lines.append(f"  {cat}: {wr_c:.0f}% win ({w_c}W/{l_c}L) P&L ${pnl_c:+.2f}")
+        lines.append("")
+        lines.append("BY EDGE BUCKET:")
+        for bk, s in sorted(by_edge.items()):
+            total_b = s["w"] + s["l"]
+            wr_b = s["w"] / total_b * 100 if total_b else 0
+            me = s["min_edge"]; w_b = s["w"]; l_b = s["l"]; pnl_b = s["pnl"]
+            lines.append(f"  edge ~{me}%: {wr_b:.0f}% win ({w_b}W/{l_b}L) P&L ${pnl_b:+.2f}")
+        lines.append("")
+        lines.append("RECENT 10 TRADES:")
+        for r in recent_10:
+            mt = r.get("market_type", "?"); ed = r.get("edge", 0)
+            sz = r.get("size_usdc", 0); pl = r.get("pnl", 0); qq = r.get("question", "")[:60]
+            lines.append(f"  [{mt}] edge={ed:+.3f} ${sz:.0f} P&L ${pl:+.2f} | {qq}")
+        summary = "\n".join(lines)
+
+        import anthropic
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
+            return
+        lessons_path    = os.path.join(INTEL_DIR, "lessons.md")
+        current_lessons = open(lessons_path).read() if os.path.exists(lessons_path) else ""
+        prompt = (
+            "You are a quant strategist reviewing a prediction market bot performance.\n"
+            "Analyze the data and produce updated lessons.md content.\n\n"
+            + summary + "\n\nCURRENT LESSONS:\n" + current_lessons[-2000:] + "\n\n"
+            "Write NEW lessons.md. Be specific and data-driven. Sections:\n"
+            "## WHAT TO BUY\n## WHAT TO AVOID\n## EDGE CALIBRATION\n"
+            "## SIZING RULES\n## PATTERN ALERTS\n"
+            "If win rate <40% for a type, say AVOID. Max 600 words."
+        )
+        if not hasattr(score_market, "_ac") or score_market._ac is None:
+            score_market._ac = anthropic.Anthropic(api_key=api_key)
+        resp = score_market._ac.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+        new_lessons = resp.content[0].text.strip()
+        ts_now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        with open(lessons_path, "w") as fh:
+            fh.write(f"# Learned Lessons\n*Auto-generated {ts_now} from {len(resolved)} resolved trades*\n\n")
+            fh.write(new_lessons)
+        log(f"[LEARN] lessons.md rewritten from {len(resolved)} trades ({win_rate:.0f}% win rate)", Fore.MAGENTA)
+        tg(f"\U0001f9e0 <b>Self-learning update</b>\n{len(resolved)} trades analyzed ({win_rate:.0f}% win rate, ${total_pnl:+.2f} P&L)\nlessons.md updated.")
+        _auto_tune_min_edge(by_edge)
+        state["last_reflect_count"] = len(resolved)
+        save_state(state)
+    except Exception as e:
+        log(f"[LEARN] reflect_and_improve error: {e}", Fore.YELLOW)
+
+def _auto_tune_min_edge(by_edge: dict):
+    """Auto-tune MIN_EDGE based on which edge buckets are empirically profitable."""
+    global MIN_EDGE
+    try:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        profitable = []
+        for bk, s in by_edge.items():
+            total = s["w"] + s["l"]
+            if total < 3:
+                continue
+            wr = s["w"] / total
+            if wr >= 0.55 and s["pnl"] > 0:
+                profitable.append(s["min_edge"] / 100)
+        if not profitable:
+            log("[LEARN] Not enough data to tune MIN_EDGE", Fore.MAGENTA)
+            return
+        optimal = max(0.06, min(0.15, min(profitable)))
+        current = MIN_EDGE
+        if abs(optimal - current) < 0.005:
+            return
+        if os.path.exists(env_path):
+            env_content = open(env_path).read()
+            if f"MIN_EDGE={current}" in env_content:
+                env_content = env_content.replace(f"MIN_EDGE={current}", f"MIN_EDGE={optimal}")
+                with open(env_path, "w") as f:
+                    f.write(env_content)
+        MIN_EDGE = optimal
+        log(f"[LEARN] MIN_EDGE auto-tuned: {current:.3f} -> {optimal:.3f}", Fore.MAGENTA)
+        tg(f"\u2699\ufe0f <b>Edge threshold tuned</b>: MIN_EDGE {current:.3f} \u2192 {optimal:.3f}")
+    except Exception as e:
+        log(f"[LEARN] _auto_tune_min_edge error: {e}", Fore.YELLOW)
+
 SCAN_INTERVAL_SECONDS  = 15 * 60
 NEWS_SCAN_INTERVAL     = 5 * 60   # News arb check every 5 minutes
 NEWS_ARB_MIN_EDGE      = 0.12     # Higher bar for news arb trades (more confident)
@@ -223,7 +454,8 @@ UW_API_KEY  = os.environ.get("UW_API_KEY", "").strip()
 UW_API_BASE = "https://api.unusualwhales.com/api"
 
 LOG_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades.log")
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
+STATE_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
+RESULTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intelligence", "results.json")
 
 # ── Control Plane Parameters (Balanced profile) ───────────────────────────────
 #
@@ -238,10 +470,28 @@ RISK_OPEN_PCT   = {"NORMAL": 0.030, "RECOVERY": 0.015, "EXPANSION": 0.040,  "PAU
 MAX_ORDERS      = {"NORMAL": 8,     "RECOVERY": 4,     "EXPANSION": 10,     "PAUSED": 0}
 # ── Market blacklist — skip markets with no real model edge ──────────────────
 MARKET_BLACKLIST_KEYWORDS = [
+    # Social media noise — no real model edge
     "tweets", "tweet", "retweet", "elon musk post",
     "how many times will elon", "posts from march", "# of tweets",
     "number of tweets", "followers", "subscribers",
     "youtube views", "tiktok", "instagram posts",
+    # Sports — resolved quickly, scoring model has no edge vs market makers
+    " vs. ", "nba", "nhl", "mlb", "ncaa",
+    "o/u ", "over/under", "spread",
+    "timberwolves", "warriors", "lakers", "celtics", "bulls", "clippers",
+    "knicks", "pacers", "bucks", "cavaliers", "76ers", "nuggets", "spurs",
+    "kings", "heat", "hornets", "thunder", "blazers", "grizzlies",
+    "suns", "mavericks",
+    "lightning", "kraken", "penguins", "hurricanes", "rangers", "bruins",
+    "maple leafs", "canadiens", "blackhawks", "flames", "oilers", "canucks",
+    "yankees", "red sox", "dodgers", "cubs",
+    "chiefs", "eagles", "cowboys", "patriots", "49ers",
+    "march madness", "college basketball", "college football",
+    "world baseball classic", "howard bison",
+    "man city", "manchester city", "manchester united", "arsenal",
+    "chelsea", "liverpool", "tottenham", "barcelona", "real madrid",
+    "galatasaray", "atletico madrid",
+    "win on 2026-", "win on 2025-",   # game-day win markets
 ]
 
 def is_blacklisted(question: str) -> bool:
@@ -928,6 +1178,8 @@ def place_trade(client, market, action, size_usdc):
         if receipt.get("success"):
             log(f"✓ ORDER PLACED | {action} ${size_usdc} | {market['question'][:50]} | ID: {receipt.get('orderID','N/A')[:20]}...", Fore.GREEN)
             tg(f"✅ <b>TRADE PLACED</b>\n{action} ${size_usdc:.0f} | {market['question'][:60]}\nEdge: {market.get('edge', 0):+.3f}")
+            # Record for self-learning outcome tracking
+            log_trade_outcome(market, action, size_usdc, market.get("edge", 0), receipt)
             # Pre-approve conditional token allowance so we can sell this position later
             try:
                 client.update_balance_allowance(
@@ -1391,6 +1643,9 @@ If uncertain, return []"""
 def run_cycle(client, state):
     _read_intel_files()  # refresh soul/lessons cache once per cycle
     _load_market_cache()  # load market score cache from disk
+    # ── Self-learning: record resolved trades, reflect if enough data ────
+    record_resolved_trades()
+    reflect_and_improve()
     log("─" * 60)
     log(f"Starting scan cycle — {datetime.now().strftime('%H:%M:%S')}", Fore.CYAN)
 
