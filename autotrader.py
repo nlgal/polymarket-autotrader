@@ -1194,6 +1194,11 @@ If UW smart_money or insider_trades are high (>3) and align with your direction,
         result["edge"] = round(float(result["true_probability"]) - market["yes_price"], 4)
         if abs(result["edge"]) <= MIN_EDGE or result["confidence"] != "high":
             result["action"] = "PASS"
+        # Reject BUY_NO when no_price > 0.88 — collecting tiny premium on tail risk
+        # e.g. NO at 85¢ yields only 15¢ upside; not worth the blow-up risk
+        if result.get("action") == "BUY_NO" and market.get("no_price", 0) > 0.88:
+            result["action"] = "PASS"
+            result["reasoning"] = "BUY_NO skipped: no_price > 0.88 (tail risk > reward)"
         # Attach source count so run_cycle can use it for conviction sizing
         result["_source_count"] = source_count
         result["_has_rss"]      = bool(rss_signal)

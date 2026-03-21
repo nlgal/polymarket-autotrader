@@ -59,9 +59,11 @@ if cash < 50:
     sys.exit(0)
 
 # ── Trades ─────────────────────────────────────────────────────────────────────
-# 3 high-conviction NO positions on Iran war ending by March 31.
+# 2 high-conviction NO positions on Iran war ending by March 31.
 # Thesis: war actively escalating (week 3), strikes ramping up, no ceasefire talks.
-# Total deployment: ~$375, leaving ~$155 cash for bot cycles.
+# "US invade Iran by Mar 31" removed — NO at 85¢ is poor risk/reward (only 15¢ premium,
+#   tail risk too high relative to reward; ceasefire/conflict-end NOs at 93-94¢ are better).
+# Total deployment: ~$275, leaving ~$150+ cash for bot cycles.
 TRADES = [
     {
         "desc": "US x Iran ceasefire by Mar 31 — NO",
@@ -78,14 +80,6 @@ TRADES = [
         "usdc": 125.0,
         "tick": "0.001",
         "reason": "Conflict resolution requires both sides to announce — impossible in 10 days",
-    },
-    {
-        "desc": "Will US invade Iran by Mar 31 — NO",
-        "token_id": "38962164355021662310131812809985604710051173272585034985412007147499892280346",
-        "price": 0.853,
-        "usdc": 100.0,
-        "tick": "0.001",
-        "reason": "Trump said no invasion; market pricing 15% YES which is too high",
     },
 ]
 
