@@ -238,27 +238,46 @@ def _classify_market(question: str) -> str:
     return "other"
 
 def log_trade_outcome(market: dict, action: str, size_usdc: float, edge: float, receipt: dict):
-    """Record a placed trade for outcome tracking."""
+    """Record a placed trade with full reasoning chain for self-learning."""
     try:
         results = _load_results()
+        src_count = market.get("_source_count", 1)
         entry = {
-            "ts_placed":   datetime.now(timezone.utc).isoformat(),
-            "question":    market.get("question", "")[:120],
-            "action":      action,
-            "edge":        round(edge, 4),
-            "size_usdc":   round(size_usdc, 2),
-            "yes_price":   market.get("yes_price", 0.5),
-            "no_price":    market.get("no_price", 0.5),
-            "market_type": _classify_market(market.get("question", "")),
-            "order_id":    receipt.get("orderID", ""),
-            "token_id":    market.get("yes_token_id", "") if action == "BUY_YES" else market.get("no_token_id", ""),
-            "status":      "open",
-            "pnl":         None,
-            "resolved_at": None,
-            "reasoning":   market.get("reasoning", "")[:200],
+            # ── Identity ──────────────────────────────────────────────────────
+            "ts_placed":    datetime.now(timezone.utc).isoformat(),
+            "question":     market.get("question", "")[:120],
+            "action":       action,
+            "market_type":  _classify_market(market.get("question", "")),
+            "order_id":     receipt.get("orderID", ""),
+            "token_id":     market.get("yes_token_id", "") if action == "BUY_YES" else market.get("no_token_id", ""),
+            # ── Pricing at entry ───────────────────────────────────────────────
+            "edge":         round(edge, 4),
+            "size_usdc":    round(size_usdc, 2),
+            "yes_price":    market.get("yes_price", 0.5),
+            "no_price":     market.get("no_price", 0.5),
+            "true_prob":    market.get("true_probability", None),
+            "confidence":   market.get("confidence", ""),
+            # ── Reasoning chain (the trading-as-git commit message) ────────────
+            "reasoning":    market.get("reasoning", "")[:300],
+            "source_count": src_count,
+            "sources_used": {
+                "perplexity": market.get("_has_pplx", False),
+                "rss":        market.get("_has_rss", False),
+                "uw":         market.get("_has_uw", False),
+            },
+            "uw_boost":     market.get("_uw_boosted", False),  # did UW boost the edge?
+            "volume_24h":   market.get("volume", 0),
+            "end_date":     market.get("end_date", ""),
+            "mode":         market.get("_mode", "NORMAL"),
+            # ── Outcome (filled in later) ──────────────────────────────────────
+            "status":       "open",
+            "pnl":          None,
+            "resolved_at":  None,
+            "return_pct":   None,
         }
         results.append(entry)
         _save_results(results)
+        log(f"[LEARN] Trade logged: {action} {src_count}-src edge={edge:+.3f} conf={entry['confidence']} ${size_usdc:.0f}", Fore.MAGENTA)
     except Exception as e:
         log(f"[LEARN] log_trade_outcome error: {e}", Fore.YELLOW)
 
@@ -337,12 +356,39 @@ def reflect_and_improve():
         win_rate  = wins / len(resolved) * 100
         recent_10 = sorted(resolved, key=lambda x: x.get("resolved_at", ""), reverse=True)[:10]
 
+        # Build source conviction breakdown
+        by_src = {1: {"w": 0, "l": 0, "pnl": 0.0}, 2: {"w": 0, "l": 0, "pnl": 0.0}, 3: {"w": 0, "l": 0, "pnl": 0.0}}
+        by_conf = {}
+        for r in resolved:
+            pnl_r = r.get("pnl", 0) or 0
+            sc = min(r.get("source_count", 1), 3)
+            key_r = "w" if pnl_r > 0 else "l"
+            by_src[sc][key_r] += 1
+            by_src[sc]["pnl"] += pnl_r
+            conf = r.get("confidence", "unknown")
+            by_conf.setdefault(conf, {"w": 0, "l": 0, "pnl": 0.0})
+            by_conf[conf][key_r] += 1
+            by_conf[conf]["pnl"] += pnl_r
+
         lines = [
             f"TRADE PERFORMANCE SUMMARY ({len(resolved)} resolved trades)",
             f"Win rate: {win_rate:.1f}% | Total P&L: ${total_pnl:+.2f}",
             "",
-            "BY MARKET TYPE:",
+            "BY SOURCE COUNT (conviction):",
         ]
+        for sc_k in [1, 2, 3]:
+            s = by_src[sc_k]
+            total_sc = s["w"] + s["l"]
+            wr_sc = s["w"] / total_sc * 100 if total_sc else 0
+            lines.append(f"  {sc_k}-source: {wr_sc:.0f}% win ({s['w']}W/{s['l']}L) P&L ${s['pnl']:+.2f}")
+        lines.append("")
+        lines.append("BY CONFIDENCE LEVEL:")
+        for conf_k, s in by_conf.items():
+            total_ck = s["w"] + s["l"]
+            wr_ck = s["w"] / total_ck * 100 if total_ck else 0
+            lines.append(f"  {conf_k}: {wr_ck:.0f}% win ({s['w']}W/{s['l']}L) P&L ${s['pnl']:+.2f}")
+        lines.append("")
+        lines.append("BY MARKET TYPE:")
         for cat, s in by_cat.items():
             total_c = s["w"] + s["l"]
             wr_c = s["w"] / total_c * 100 if total_c else 0
@@ -1148,6 +1194,11 @@ If UW smart_money or insider_trades are high (>3) and align with your direction,
         result["edge"] = round(float(result["true_probability"]) - market["yes_price"], 4)
         if abs(result["edge"]) <= MIN_EDGE or result["confidence"] != "high":
             result["action"] = "PASS"
+        # Attach source count so run_cycle can use it for conviction sizing
+        result["_source_count"] = source_count
+        result["_has_rss"]      = bool(rss_signal)
+        result["_has_uw"]       = bool(uw_text)
+        result["_has_pplx"]     = bool(news)
         _set_cached_score(market, result)  # cache this assessment
         return {**market, **result}
     except Exception as e:
@@ -1225,9 +1276,13 @@ def place_trade(client, market, action, size_usdc):
 
 # ── Size Calculator ───────────────────────────────────────────────────────────
 
-def calculate_size(edge, mode, equity_now, deployed, market_price=0.5):
+def calculate_size(edge, mode, equity_now, deployed, market_price=0.5, source_count=1):
     """
     Kelly-inspired sizing within mode-defined min/max bounds.
+    Conviction multiplier: source_count (1/2/3) scales size up to SIZE_MAX.
+      1 source  → base edge sizing (no bonus)
+      2 sources → +25% of (SIZE_MAX - base)
+      3 sources → +60% of (SIZE_MAX - base)  [near SIZE_MAX]
     The RISK_OPEN_PCT budget scales with equity at higher balances (e.g. $5k+).
     At small balances (<$5k) we use fixed SIZE_MIN/MAX directly so trades always fire.
     """
@@ -1237,9 +1292,17 @@ def calculate_size(edge, mode, equity_now, deployed, market_price=0.5):
     if remaining_capacity < SIZE_MIN[mode]:
         return 0
 
-    # Scale between mode min and max based on edge strength
+    # Base sizing: scale between mode min and max based on edge strength
     edge_strength = min(abs(edge) / 0.30, 1.0)
     size = SIZE_MIN[mode] + (SIZE_MAX[mode] - SIZE_MIN[mode]) * edge_strength
+
+    # Conviction multiplier: more sources = more confidence = bigger size
+    # source_count=1: no bonus | 2: +25% headroom | 3: +60% headroom
+    conv_bonus = {1: 0.0, 2: 0.25, 3: 0.60}.get(min(source_count, 3), 0.0)
+    if conv_bonus > 0:
+        headroom = SIZE_MAX[mode] - size
+        size = size + headroom * conv_bonus
+        log(f"  [CONVICTION] {source_count}-source bet — size boosted to ${size:.0f}", Fore.MAGENTA)
 
     # At higher equity levels, also respect the percentage-based open risk budget
     if equity_now > 5000:
@@ -1984,10 +2047,15 @@ def run_cycle(client, state):
             log(f"  SKIP (already ${already_in:.0f} in this market, cap=${MAX_PER_MARKET_USDC}): {m['question'][:50]}", Fore.YELLOW)
             continue
 
-        log(f"  {action} | edge={edge:+.3f} | {m['question'][:55]}", Fore.GREEN)
+        log(f"  {action} | edge={edge:+.3f} | src={m.get('_source_count',1)} | {m['question'][:50]}", Fore.GREEN)
         log(f"    Reasoning: {m.get('reasoning','')[:100]}")
 
-        size = calculate_size(edge, mode, equity_now, stats["deployed"], market_price=m.get("price", 0.5))
+        # Annotate market dict with mode + UW boost for trade log
+        m["_mode"]      = mode
+        m["_uw_boosted"] = bool(m.get("_uw_yes_sig") or m.get("_uw_no_sig"))
+
+        src_cnt = m.get("_source_count", 1)
+        size = calculate_size(edge, mode, equity_now, stats["deployed"], market_price=m.get("price", 0.5), source_count=src_cnt)
         size = min(size, available)  # Never exceed available free balance
         size = min(size, MAX_PER_MARKET_USDC - already_in)  # Per-market cap
         if size < SIZE_MIN[mode]:
