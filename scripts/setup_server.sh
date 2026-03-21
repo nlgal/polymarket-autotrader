@@ -44,7 +44,7 @@ cat > /etc/systemd/system/polymarket.service << SERVICE
 [Unit]
 Description=Polymarket Auto-Trader
 After=network.target
-StartLimitIntervalSec=60
+StartLimitIntervalSec=300
 StartLimitBurst=3
 
 [Service]

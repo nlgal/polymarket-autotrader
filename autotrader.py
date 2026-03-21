@@ -1111,6 +1111,7 @@ def score_market(market, mode="NORMAL"):
                 timeout=20,
             )
             news = r.json()["choices"][0]["message"]["content"]
+            _count_api_call()  # track Perplexity call
         except Exception:
             pass
 
@@ -1185,12 +1186,30 @@ If UW smart_money or insider_trades are high (>3) and align with your direction,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
         )
+        _count_api_call()  # track Anthropic call
         text = resp.content[0].text.strip()
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]
         result = json.loads(text.strip())
+        # ── LLM response validation — never act on malformed/hallucinated output ──
+        # Validate required fields exist and are correct types before trusting them.
+        required = {"true_probability": (int, float), "confidence": str,
+                    "action": str, "reasoning": str}
+        for field, expected_type in required.items():
+            if field not in result:
+                raise ValueError(f"LLM response missing field: {field}")
+            if not isinstance(result[field], expected_type):
+                raise ValueError(f"LLM field '{field}' wrong type: {type(result[field]).__name__} (expected {expected_type.__name__})")
+        tp = float(result["true_probability"])
+        if not (0.0 <= tp <= 1.0):
+            raise ValueError(f"LLM true_probability out of range: {tp}")
+        if result["action"] not in ("BUY_YES", "BUY_NO", "PASS"):
+            raise ValueError(f"LLM action invalid: {result['action']}")
+        if result["confidence"] not in ("high", "medium", "low"):
+            result["confidence"] = "low"  # demote unknown confidence to low
+        # ── End validation ─────────────────────────────────────────────────────
         result["edge"] = round(float(result["true_probability"]) - market["yes_price"], 4)
         if abs(result["edge"]) <= MIN_EDGE or result["confidence"] != "high":
             result["action"] = "PASS"
@@ -1210,7 +1229,25 @@ If UW smart_money or insider_trades are high (>3) and align with your direction,
         return {**market, "action": "PASS", "edge": 0, "confidence": "low", "reasoning": str(e)[:100]}
 
 
+# API call budget guard — alert if a cycle makes an unusual number of LLM calls
+_API_CALL_COUNT  = 0    # reset each cycle
+MAX_API_CALLS_PER_CYCLE = 80  # 30 markets * 2 APIs + buffer; >80 = runaway
+
+def _count_api_call():
+    """Increment the per-cycle API call counter."""
+    global _API_CALL_COUNT
+    _API_CALL_COUNT += 1
+    if _API_CALL_COUNT == MAX_API_CALLS_PER_CYCLE:
+        msg = (f"\u26a0\ufe0f <b>API BUDGET WARNING</b>\n"
+               f"Cycle made {_API_CALL_COUNT} LLM calls \u2014 exceeds expected maximum ({MAX_API_CALLS_PER_CYCLE}).\n"
+               f"Check for runaway scoring loops.")
+        tg(msg)
+        log(f"[API BUDGET] WARNING: {_API_CALL_COUNT} API calls this cycle", Fore.RED)
+
+
 def score_batch(markets, mode="NORMAL"):
+    global _API_CALL_COUNT
+    _API_CALL_COUNT = 0   # reset counter at start of each batch
     from concurrent.futures import ThreadPoolExecutor, as_completed
     results = []
     with ThreadPoolExecutor(max_workers=5) as pool:
@@ -1219,6 +1256,7 @@ def score_batch(markets, mode="NORMAL"):
             r = f.result()
             if r:
                 results.append(r)
+    log(f"  [API BUDGET] {_API_CALL_COUNT} LLM calls this scoring batch", Fore.CYAN)
     return sorted(results, key=lambda x: abs(x.get("edge", 0)), reverse=True)
 
 
@@ -2109,6 +2147,16 @@ def main():
     last_news_scan = 0       # Timestamp of last 5-min news arb scan
     last_review    = 0       # Timestamp of last weekly pattern review
 
+    # ── Crash-loop circuit breaker ────────────────────────────────────────────
+    # Tracks rapid consecutive errors. If the bot crashes 5 times in <10 min,
+    # it backs off exponentially (up to 30 min sleep) and alerts Telegram.
+    # This prevents runaway API calls ($500 bill) in crash-loops.
+    _err_times = []          # timestamps of recent errors
+    _CIRCUIT_WINDOW  = 600   # 10-minute window
+    _CIRCUIT_MAX     = 5     # errors within window = circuit opens
+    _backoff_sleep   = 60    # current sleep after error (doubles each breach, max 1800)
+    # ──────────────────────────────────────────────────────────────
+
     while True:
         now = time.time()
         try:
@@ -2157,9 +2205,29 @@ def main():
             short = tb.strip().splitlines()
             # Send last 15 lines of traceback to Telegram so we can diagnose
             tb_snippet = "\n".join(short[-15:])
-            tg(f"🔴 <b>Cycle error</b>\n<code>{str(e)[:200]}</code>\n\n<code>{tb_snippet[:800]}</code>")
+            tg(f"\U0001f534 <b>Cycle error</b>\n<code>{str(e)[:200]}</code>\n\n<code>{tb_snippet[:800]}</code>")
             log_mistake("Cycle error", "Unhandled exception", str(e)[:150], "Add specific handling for this error type")
-            time.sleep(60)
+
+            # ── Circuit breaker: exponential backoff on rapid crash-loops ──
+            now_err = time.time()
+            _err_times.append(now_err)
+            # Evict errors older than window
+            _err_times[:] = [t for t in _err_times if now_err - t < _CIRCUIT_WINDOW]
+            if len(_err_times) >= _CIRCUIT_MAX:
+                _backoff_sleep = min(_backoff_sleep * 2, 1800)  # double up to 30 min
+                tg(
+                    f"\u26a0\ufe0f <b>CIRCUIT BREAKER</b> \u2014 {len(_err_times)} errors in "
+                    f"{_CIRCUIT_WINDOW//60}min\n"
+                    f"Backing off {_backoff_sleep//60:.0f}min to protect API budget.\n"
+                    f"Last error: <code>{str(e)[:200]}</code>"
+                )
+                log(f"[CIRCUIT BREAKER] {len(_err_times)} errors in {_CIRCUIT_WINDOW//60}min — "
+                    f"sleeping {_backoff_sleep//60:.0f}min", Fore.RED)
+                time.sleep(_backoff_sleep)
+            else:
+                _backoff_sleep = 60  # reset backoff on isolated error
+                time.sleep(60)
+            # ── End circuit breaker ────────────────────────────────────────
 
 
 if __name__ == "__main__":
