@@ -1084,18 +1084,40 @@ def score_market(market, mode="NORMAL"):
     market["_uw_yes_sig"] = uw_yes_sig
     market["_uw_no_sig"]  = uw_no_sig
 
+    # ── Multi-source signal: match RSS headlines to this market ─────────────
+    rss_signal = ""
+    try:
+        cached_headlines = getattr(score_market, "_rss_cache", [])
+        if cached_headlines:
+            q_words = set(market.get("question", "").lower().split())
+            q_words -= {"will", "the", "a", "an", "be", "by", "in", "on", "is", "of", "to", "for", "and", "or"}
+            matches = [h for h in cached_headlines if sum(1 for w in q_words if w in h.lower()) >= 2]
+            if matches:
+                rss_signal = "BREAKING NEWS MATCHES:\n" + "\n".join(matches[:5])
+    except Exception:
+        pass
+
+    # Build consensus block for prompt
+    consensus = ""
+    source_count = 0
+    if news:        consensus += f"SOURCE 1 (Perplexity/web): {news[:300]}\n"; source_count += 1
+    if rss_signal:  consensus += f"SOURCE 2 (Live RSS feeds): {rss_signal[:300]}\n"; source_count += 1
+    if uw_text:     consensus += f"SOURCE 3 (Unusual Whales smart money): {uw_text[:200]}\n"; source_count += 1
+    if source_count >= 2:
+        consensus += f"MULTI-SOURCE CONFIDENCE: {source_count}/3 sources have data — weight accordingly.\n"
+
     prompt = f"""MARKET: {market['question']}
 YES price: ${market['yes_price']:.3f} | NO price: ${market['no_price']:.3f}
 Volume 24h: ${market['volume']:,.0f}
 Description: {market.get('description','N/A')[:300]}
 End date: {market.get('end_date','N/A')}
-News: {news[:400] if news else 'No real-time data'}
-{('UNUSUAL WHALES SMART MONEY DATA:\n' + uw_text) if uw_text else ''}
+{consensus if consensus else ("News: " + (news[:400] if news else "No real-time data"))}
 {intel}
 Respond with ONLY valid JSON:
 {{"true_probability": <float>, "confidence": "<high|medium|low>", "reasoning": "<max 150 chars>", "edge": <true_prob minus yes_price>, "action": "<BUY_YES|BUY_NO|PASS>"}}
 
 Rules: BUY_YES if edge>0.07 and confidence=high. BUY_NO if edge<-0.07 and confidence=high. PASS otherwise.
+If 2+ sources agree on direction, upgrade confidence. If sources conflict, downgrade to PASS.
 If UW smart_money or insider_trades are high (>3) and align with your direction, increase confidence. If they contradict your direction, lower confidence or PASS."""
 
     sys_text = (
@@ -1312,6 +1334,148 @@ def cancel_and_resubmit_stale_orders(client, current_markets_by_token):
 
 
 # ── Position Manager ─────────────────────────────────────────────────────────
+
+
+# =============================================================================
+#  THESIS INVALIDATION EXIT
+#  Every cycle, re-checks news on open positions valued > $50.
+#  If Perplexity + Claude both say the original thesis is broken,
+#  auto-sells the position and logs the reason.
+# =============================================================================
+
+# Cache: {token_id: {"thesis": str, "checked_at": float}}
+_THESIS_CACHE: dict = {}
+THESIS_RECHECK_INTERVAL = 3600   # re-check each position at most once per hour
+THESIS_MIN_VALUE = 50.0          # only check positions worth >$50
+
+def check_thesis_invalidation(client):
+    """
+    For each open position > $50, ask Perplexity for fresh news,
+    then ask Claude if the original thesis is still valid.
+    If Claude says INVALID with high confidence, sell immediately.
+    """
+    import anthropic, time as _time
+    api_key  = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    pplx_key = os.environ.get("PERPLEXITY_API_KEY", "").strip()
+    if not api_key or not pplx_key:
+        return
+
+    try:
+        # Get current positions from data API (faster than CLOB trades scan)
+        pos_resp = requests.get(
+            f"https://data-api.polymarket.com/positions?user={FUNDER}&limit=20",
+            timeout=10
+        )
+        if pos_resp.status_code != 200:
+            return
+        positions = pos_resp.json()
+    except Exception as e:
+        log(f"[THESIS] Could not fetch positions: {e}", Fore.YELLOW)
+        return
+
+    now = _time.time()
+    for p in positions:
+        cur_val  = float(p.get("currentValue", 0) or 0)
+        if cur_val < THESIS_MIN_VALUE:
+            continue
+
+        token_id = p.get("asset", "")
+        title    = p.get("title", "")
+        outcome  = p.get("outcome", "")  # "Yes" or "No"
+        avg_p    = float(p.get("avgPrice", 0) or 0)
+        size     = float(p.get("size", 0) or 0)
+
+        # Rate limit: skip if checked recently
+        last_check = _THESIS_CACHE.get(token_id, {}).get("checked_at", 0)
+        if now - last_check < THESIS_RECHECK_INTERVAL:
+            continue
+
+        _THESIS_CACHE[token_id] = {"checked_at": now}
+
+        log(f"[THESIS] Checking: {title[:55]} ({outcome} @ {avg_p:.3f})", Fore.MAGENTA)
+
+        # Step 1: Get fresh news via Perplexity
+        fresh_news = ""
+        try:
+            r = requests.post(
+                "https://api.perplexity.ai/chat/completions",
+                json={
+                    "model": "sonar",
+                    "messages": [
+                        {"role": "system", "content": "Find the latest news (last 24 hours) about this topic. Focus on any events that could change the outcome. Be brief and factual."},
+                        {"role": "user", "content": title},
+                    ],
+                    "max_tokens": 300,
+                    "temperature": 0.1,
+                },
+                headers={"Authorization": f"Bearer {pplx_key}", "Content-Type": "application/json"},
+                timeout=20,
+            )
+            fresh_news = r.json()["choices"][0]["message"]["content"]
+        except Exception as ne:
+            log(f"[THESIS] Perplexity failed for {title[:40]}: {ne}", Fore.YELLOW)
+            continue
+
+        # Step 2: Ask Claude if thesis is still valid
+        prompt = (
+            f"We hold a prediction market position: {outcome.upper()} on '{title}'\n"
+            f"Entry price: {avg_p:.3f} | Current value: ${cur_val:.2f}\n"
+            f"\nFresh news (last 24h):\n{fresh_news[:500]}\n\n"
+            f"Question: Is our {outcome.upper()} thesis STILL VALID, or has something happened that INVALIDATES it?\n"
+            f"Respond with ONLY one of: VALID | INVALID | UNCERTAIN\n"
+            f"Then on the next line, one sentence explaining why (max 100 chars)."
+        )
+
+        try:
+            if not hasattr(score_market, "_ac") or score_market._ac is None:
+                score_market._ac = anthropic.Anthropic(api_key=api_key)
+            resp = score_market._ac.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=80,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+            )
+            verdict_text = resp.content[0].text.strip()
+            verdict      = verdict_text.split("\n")[0].strip().upper()
+            reason_line  = verdict_text.split("\n")[1].strip() if "\n" in verdict_text else ""
+        except Exception as ce:
+            log(f"[THESIS] Claude verdict failed: {ce}", Fore.YELLOW)
+            continue
+
+        log(f"[THESIS] {title[:45]} → {verdict}: {reason_line[:80]}", Fore.MAGENTA)
+
+        if verdict == "INVALID":
+            # Auto-sell
+            log(f"[THESIS] THESIS BROKEN — auto-selling {outcome} position", Fore.RED)
+            tg(f"\u26a0\ufe0f <b>Thesis Invalidated</b>\n{title[:60]}\nReason: {reason_line[:120]}\nSelling {outcome} position (${cur_val:.0f})")
+            _execute_thesis_sell(client, token_id, size, reason_line)
+        elif verdict == "UNCERTAIN":
+            tg(f"\u26a0\ufe0f <b>Thesis Uncertain</b>\n{title[:60]}\n{reason_line[:120]}\nMonitoring closely.", silent=True)
+
+def _execute_thesis_sell(client, token_id: str, shares: float, reason: str):
+    """Execute a market sell for thesis invalidation."""
+    try:
+        from py_clob_client.order_builder.constants import SELL
+        from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+        book = client.get_midpoint(token_id)
+        cur_price = float(book.get("mid", 0.5))
+        tick      = client.get_tick_size(token_id)
+        neg_risk  = client.get_neg_risk(token_id)
+        tick_f    = float(tick)
+        tick_dec  = len(str(tick).rstrip("0").split(".")[-1]) if "." in str(tick) else 0
+        sell_price = round(round(cur_price / tick_f) * tick_f, tick_dec)
+        sell_price = max(0.01, min(0.99, sell_price))
+        args       = OrderArgs(token_id=token_id, price=sell_price, size=round(shares, 2), side=SELL)
+        options    = PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk)
+        signed     = client.create_order(args, options)
+        receipt    = client.post_order(signed, OrderType.GTC)
+        if receipt.get("success"):
+            log(f"[THESIS] Sold @ {sell_price:.3f} | {reason[:80]}", Fore.GREEN)
+            tg(f"\u2705 <b>Thesis exit sold</b> @ {sell_price:.3f}\n{reason[:100]}")
+        else:
+            log(f"[THESIS] Sell failed: {receipt.get('errorMsg','')}", Fore.RED)
+    except Exception as e:
+        log(f"[THESIS] _execute_thesis_sell error: {e}", Fore.YELLOW)
 
 def manage_positions(client):
     """
@@ -1649,8 +1813,9 @@ def run_cycle(client, state):
     log("─" * 60)
     log(f"Starting scan cycle — {datetime.now().strftime('%H:%M:%S')}", Fore.CYAN)
 
-    # ── 1. Manage existing positions (sell signals) ────────────────────────────
+    # ── 1. Manage existing positions (sell signals + thesis checks) ────────────
     manage_positions(client)
+    check_thesis_invalidation(client)  # re-check news on all open positions
 
     # ── 2. Get current equity and update control plane ─────────────────────────
     equity_now = get_equity(client)
@@ -1687,6 +1852,12 @@ def run_cycle(client, state):
     log(f"Found {len(all_markets)} markets. Scoring top {TOP_MARKETS_TO_SCORE}...")
 
     # ── 6. Score (pass mode to restrict in Recovery) ──────────────────────────
+    # Pre-fetch RSS headlines once and cache on score_market for multi-source scoring
+    try:
+        score_market._rss_cache = fetch_news_headlines()
+        log(f"[MULTI-SRC] RSS cache: {len(score_market._rss_cache)} headlines", Fore.CYAN)
+    except Exception:
+        score_market._rss_cache = []
     scored = score_batch(all_markets[:TOP_MARKETS_TO_SCORE], mode=mode)
     _save_market_cache()  # persist updated scores to disk
 
