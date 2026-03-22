@@ -1237,11 +1237,11 @@ HARD PASS rules (return PASS immediately, no exceptions):
         result["edge"] = round(float(result["true_probability"]) - market["yes_price"], 4)
         if abs(result["edge"]) <= MIN_EDGE or result["confidence"] != "high":
             result["action"] = "PASS"
-        # Reject BUY_NO when no_price > 0.88 — collecting tiny premium on tail risk
-        # e.g. NO at 85¢ yields only 15¢ upside; not worth the blow-up risk
-        if result.get("action") == "BUY_NO" and market.get("no_price", 0) > 0.88:
+        # Reject BUY_NO when no_price > 0.82 — collecting tiny premium on tail risk
+        # e.g. NO at 83¢ yields only 17¢ upside with fat blow-up tail; not worth it
+        if result.get("action") == "BUY_NO" and market.get("no_price", 0) > 0.82:
             result["action"] = "PASS"
-            result["reasoning"] = "BUY_NO skipped: no_price > 0.88 (tail risk > reward)"
+            result["reasoning"] = "BUY_NO skipped: no_price > 0.82 (tail risk > reward)"
         # Attach source count so run_cycle can use it for conviction sizing
         result["_source_count"] = source_count
         result["_has_rss"]      = bool(rss_signal)
@@ -1473,10 +1473,32 @@ def cancel_and_resubmit_stale_orders(client, current_markets_by_token):
 #  auto-sells the position and logs the reason.
 # =============================================================================
 
-# Cache: {token_id: {"thesis": str, "checked_at": float}}
-_THESIS_CACHE: dict = {}
+# Cache: {token_id: {"thesis": str, "checked_at": float, "bought_at": float}}
+# Persisted to disk so it survives service restarts (prevents buy-then-sell churn)
+THESIS_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "thesis_cache.json")
 THESIS_RECHECK_INTERVAL = 3600   # re-check each position at most once per hour
 THESIS_MIN_VALUE = 50.0          # only check positions worth >$50
+THESIS_NEW_POSITION_GRACE = 4 * 3600  # never thesis-exit within 4h of buying
+
+def _load_thesis_cache() -> dict:
+    """Load thesis cache from disk, return empty dict on any error."""
+    try:
+        if os.path.exists(THESIS_CACHE_FILE):
+            with open(THESIS_CACHE_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def _save_thesis_cache(cache: dict) -> None:
+    """Persist thesis cache to disk."""
+    try:
+        with open(THESIS_CACHE_FILE, "w") as f:
+            json.dump(cache, f)
+    except Exception as e:
+        log(f"[THESIS] Cache save failed: {e}", Fore.YELLOW)
+
+_THESIS_CACHE: dict = _load_thesis_cache()
 
 def check_thesis_invalidation(client):
     """
@@ -1515,12 +1537,25 @@ def check_thesis_invalidation(client):
         avg_p    = float(p.get("avgPrice", 0) or 0)
         size     = float(p.get("size", 0) or 0)
 
+        # Grace period: never thesis-exit a position bought in last 4 hours.
+        # This prevents buy-then-sell churn when service restarts and cache is cold.
+        # Record "first_seen" the moment we first encounter this token_id.
+        if token_id not in _THESIS_CACHE:
+            _THESIS_CACHE[token_id] = {"checked_at": 0, "first_seen": now}
+            _save_thesis_cache(_THESIS_CACHE)
+        first_seen = _THESIS_CACHE[token_id].get("first_seen", now)
+        if now - first_seen < THESIS_NEW_POSITION_GRACE:
+            age_min = (now - first_seen) / 60
+            log(f"[THESIS] {title[:45]} — grace period ({age_min:.0f}m / 240m elapsed), skip", Fore.MAGENTA)
+            continue
+
         # Rate limit: skip if checked recently
-        last_check = _THESIS_CACHE.get(token_id, {}).get("checked_at", 0)
+        last_check = _THESIS_CACHE[token_id].get("checked_at", 0)
         if now - last_check < THESIS_RECHECK_INTERVAL:
             continue
 
-        _THESIS_CACHE[token_id] = {"checked_at": now}
+        _THESIS_CACHE[token_id]["checked_at"] = now
+        _save_thesis_cache(_THESIS_CACHE)
 
         log(f"[THESIS] Checking: {title[:55]} ({outcome} @ {avg_p:.3f})", Fore.MAGENTA)
 
@@ -1910,7 +1945,7 @@ If uncertain, return []"""
         no_price  = market["no_price"]
         if action == "BUY_YES" and yes_price > 0.88:
             continue  # already priced in
-        if action == "BUY_NO" and no_price > 0.88:
+        if action == "BUY_NO" and no_price > 0.82:
             continue  # already priced in
 
         # Size up for news arb — higher confidence = larger trade
