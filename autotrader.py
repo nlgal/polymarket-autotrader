@@ -521,24 +521,41 @@ MARKET_BLACKLIST_KEYWORDS = [
     "how many times will elon", "posts from march", "# of tweets",
     "number of tweets", "followers", "subscribers",
     "youtube views", "tiktok", "instagram posts",
-    # Sports — resolved quickly, scoring model has no edge vs market makers
-    " vs. ", "nba", "nhl", "mlb", "ncaa",
-    "o/u ", "over/under", "spread",
+    # Sports — empirically proven -$800 loss center. No edge vs real-time pricing.
+    # Hard block ALL sports patterns at the code level (prompt alone is not enough).
+    " vs. ", "nba", "nhl", "mlb", "ncaa", "nfl",
+    "o/u ", "over/under", "spread", "anytime goalscorer",
+    # NBA teams
     "timberwolves", "warriors", "lakers", "celtics", "bulls", "clippers",
     "knicks", "pacers", "bucks", "cavaliers", "76ers", "nuggets", "spurs",
     "kings", "heat", "hornets", "thunder", "blazers", "grizzlies",
-    "suns", "mavericks",
+    "suns", "mavericks", "pistons", "wizards", "hawks", "magic", "raptors",
+    "jazz", "pelicans", "rockets",
+    # NHL teams
     "lightning", "kraken", "penguins", "hurricanes", "rangers", "bruins",
     "maple leafs", "canadiens", "blackhawks", "flames", "oilers", "canucks",
-    "yankees", "red sox", "dodgers", "cubs",
-    "chiefs", "eagles", "cowboys", "patriots", "49ers",
-    "march madness", "college basketball", "college football",
-    "world baseball classic", "howard bison",
+    "avalanche", "golden knights", "predators", "blues", "wild", "jets",
+    "flyers", "sabres", "senators", "coyotes", "ducks",
+    # MLB teams
+    "yankees", "red sox", "dodgers", "cubs", "mets", "braves", "astros",
+    # NFL teams
+    "chiefs", "eagles", "cowboys", "patriots", "49ers", "bills", "ravens",
+    # Soccer / football
     "man city", "manchester city", "manchester united", "arsenal",
     "chelsea", "liverpool", "tottenham", "barcelona", "real madrid",
-    "galatasaray", "atletico madrid",
+    "galatasaray", "atletico madrid", "augsburg", "stuttgart", "mainz",
+    "eintracht", "bundesliga", "premier league", "la liga", "serie a",
+    "ligue 1", "mls",
+    # Tennis
+    "wimbledon", "french open", "us open", "australian open",
+    "zverev", "djokovic", "alcaraz", "sinner",
+    # College / other
+    "march madness", "college basketball", "college football",
+    "world baseball classic", "howard bison",
     "win on 2026-", "win on 2025-",   # game-day win markets
-]
+    "stanley cup", "super bowl", "world series", "nba finals",
+    "nhl playoffs", "nba playoffs",
+]  # Empirical analysis: sports = -$800 loss. Macro/geopolitical = +$700 profit.
 
 def is_blacklisted(question: str) -> bool:
     q = question.lower()
@@ -1165,7 +1182,14 @@ Respond with ONLY valid JSON:
 
 Rules: BUY_YES if edge>0.07 and confidence=high. BUY_NO if edge<-0.07 and confidence=high. PASS otherwise.
 If 2+ sources agree on direction, upgrade confidence. If sources conflict, downgrade to PASS.
-If UW smart_money or insider_trades are high (>3) and align with your direction, increase confidence. If they contradict your direction, lower confidence or PASS."""
+If UW smart_money or insider_trades are high (>3) and align with your direction, increase confidence. If they contradict your direction, lower confidence or PASS.
+
+CRITICAL — Information Asymmetry Test: Before returning BUY_YES or BUY_NO, ask: 'What specific information do I have that the current price does NOT already reflect?' If your answer is 'I agree with the market consensus' or 'I can imagine this scenario' — return PASS. Only trade if you have a specific breaking catalyst the market has not yet repriced.
+
+HARD PASS rules (return PASS immediately, no exceptions):
+- ANY sports market (NBA, NHL, NFL, soccer, baseball, tennis, etc.) — you have no edge vs in-play pricing
+- YES price < 0.08 without a confirmed breaking catalyst directly enabling the outcome
+- Market you already assessed as BUY in the last 24 hours (avoid fragmented re-entry)"""
 
     sys_text = (
         "You are a quantitative prediction market trader. Output ONLY valid JSON.\n"
