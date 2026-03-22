@@ -521,10 +521,19 @@ MARKET_BLACKLIST_KEYWORDS = [
     "how many times will elon", "posts from march", "# of tweets",
     "number of tweets", "followers", "subscribers",
     "youtube views", "tiktok", "instagram posts",
-    # Sports — empirically proven -$800 loss center. No edge vs real-time pricing.
-    # Hard block ALL sports patterns at the code level (prompt alone is not enough).
-    " vs. ", "nba", "nhl", "mlb", "ncaa", "nfl",
+    # In-play / game-day markets — always blocked regardless of sports policy
     "o/u ", "over/under", "spread", "anytime goalscorer",
+    "win on 2026-", "win on 2025-",   # game-day win markets
+]  # Social/noise blacklist — sports handled separately by is_sports_market()
+
+# Sports keyword detector — used to route markets through sports policy checks
+SPORTS_KEYWORDS = [
+    "nba", "nhl", "mlb", "ncaa", "nfl", "mls",
+    "march madness", "college basketball", "college football",
+    "world baseball classic", "stanley cup", "super bowl", "world series",
+    "nba finals", "nhl playoffs", "nba playoffs",
+    "premier league", "la liga", "serie a", "ligue 1", "bundesliga",
+    "wimbledon", "french open", "us open tennis", "australian open",
     # NBA teams
     "timberwolves", "warriors", "lakers", "celtics", "bulls", "clippers",
     "knicks", "pacers", "bucks", "cavaliers", "76ers", "nuggets", "spurs",
@@ -540,26 +549,140 @@ MARKET_BLACKLIST_KEYWORDS = [
     "yankees", "red sox", "dodgers", "cubs", "mets", "braves", "astros",
     # NFL teams
     "chiefs", "eagles", "cowboys", "patriots", "49ers", "bills", "ravens",
-    # Soccer / football
+    # Soccer clubs
     "man city", "manchester city", "manchester united", "arsenal",
     "chelsea", "liverpool", "tottenham", "barcelona", "real madrid",
     "galatasaray", "atletico madrid", "augsburg", "stuttgart", "mainz",
-    "eintracht", "bundesliga", "premier league", "la liga", "serie a",
-    "ligue 1", "mls",
-    # Tennis
-    "wimbledon", "french open", "us open", "australian open",
+    "eintracht",
+    # Tennis players
     "zverev", "djokovic", "alcaraz", "sinner",
     # College / other
-    "march madness", "college basketball", "college football",
-    "world baseball classic", "howard bison",
-    "win on 2026-", "win on 2025-",   # game-day win markets
-    "stanley cup", "super bowl", "world series", "nba finals",
-    "nhl playoffs", "nba playoffs",
-]  # Empirical analysis: sports = -$800 loss. Macro/geopolitical = +$700 profit.
+    "howard bison",
+]
 
 def is_blacklisted(question: str) -> bool:
     q = question.lower()
     return any(kw in q for kw in MARKET_BLACKLIST_KEYWORDS)
+
+def is_sports_market(question: str) -> bool:
+    """Returns True if the market is a sports market (routes through sports policy)."""
+    q = question.lower()
+    return any(kw in q for kw in SPORTS_KEYWORDS)
+
+# Sports circuit-breaker state (persisted inside main state.json via key 'sports')
+# Structure: {
+#   "daily_pnl": float,       # sports PnL today
+#   "daily_date": str,        # YYYY-MM-DD of daily_pnl
+#   "weekly_pnl": float,      # sports PnL this week
+#   "week_start": str,        # ISO date of week start
+#   "consec_losses": int,     # consecutive sports losses
+#   "disabled_until": float,  # unix timestamp — 0 = not disabled
+#   "halved_until": float,    # unix timestamp — 0 = not halved
+#   "per_sport": {},          # {sport_name: exposure_usdc}
+#   "exposure_total": float,  # total open sports exposure
+# }
+
+def get_sports_state(state: dict) -> dict:
+    """Get (or initialize) sports sub-state from main state dict."""
+    if "sports" not in state:
+        state["sports"] = {
+            "daily_pnl": 0.0,
+            "daily_date": "",
+            "weekly_pnl": 0.0,
+            "week_start": "",
+            "consec_losses": 0,
+            "disabled_until": 0.0,
+            "halved_until": 0.0,
+            "per_sport": {},
+            "exposure_total": 0.0,
+        }
+    return state["sports"]
+
+def check_sports_eligibility(market: dict, state: dict, equity: float) -> tuple:
+    """
+    Enforce sports policy rules S1-S17 before scoring.
+    Returns (allowed: bool, reason: str).
+    Market dict must have: volume (24h), yes_price, no_price, end_date.
+    """
+    import time as _t
+    from datetime import datetime as _dt, timezone as _tz
+
+    ss = get_sports_state(state)
+    now = _t.time()
+
+    # Reset daily PnL if new day
+    today = _dt.utcnow().date().isoformat()
+    if ss.get("daily_date") != today:
+        ss["daily_pnl"] = 0.0
+        ss["daily_date"] = today
+
+    # Reset weekly PnL if new week (Monday)
+    from datetime import date as _date
+    today_d = _date.today()
+    week_start = (today_d - __import__('datetime').timedelta(days=today_d.weekday())).isoformat()
+    if ss.get("week_start") != week_start:
+        ss["weekly_pnl"] = 0.0
+        ss["week_start"] = week_start
+
+    # [S14/S15/S16/S17] Circuit breakers: is sports disabled?
+    if ss.get("disabled_until", 0) > now:
+        remaining_h = (ss["disabled_until"] - now) / 3600
+        return False, f"Sports disabled for {remaining_h:.1f}h more (circuit breaker)"
+
+    # Check daily DD thresholds
+    if equity > 0:
+        daily_dd_pct = abs(min(0, ss.get("daily_pnl", 0))) / equity
+        if daily_dd_pct >= 0.035:
+            # Disable for 24h
+            ss["disabled_until"] = now + 86400
+            return False, f"Sports daily DD {daily_dd_pct*100:.1f}% >= 3.5% — disabled 24h"
+
+    # Check weekly DD
+    if equity > 0:
+        weekly_dd_pct = abs(min(0, ss.get("weekly_pnl", 0))) / equity
+        if weekly_dd_pct >= 0.06:
+            ss["disabled_until"] = now + 7 * 86400
+            return False, f"Sports weekly DD {weekly_dd_pct*100:.1f}% >= 6% — disabled 7 days"
+
+    # [S17] Consecutive losses
+    if ss.get("consec_losses", 0) >= 5:
+        if ss.get("disabled_until", 0) == 0:  # not already set
+            ss["disabled_until"] = now + 2 * 86400
+        return False, f"Sports: 5 consecutive losses — 48h cooldown"
+
+    # [S2] Liquidity check
+    volume = float(market.get("volume", 0) or 0)
+    if volume < 5000:
+        return False, f"Sports liquidity too low: ${volume:,.0f} 24h vol (min $5,000)"
+
+    # [S1] Timing: market end_date as proxy — require end_date > 24h from now
+    # (Polymarket doesn't expose game_start; end_date is close enough for the filter)
+    end_date_str = market.get("end_date", "")
+    if end_date_str:
+        try:
+            end_dt = _dt.fromisoformat(end_date_str.replace("Z", "+00:00"))
+            hours_to_end = (end_dt - _dt.now(_tz.utc)).total_seconds() / 3600
+            if hours_to_end < 24:
+                return False, f"Sports market ends in {hours_to_end:.0f}h — too close to game time"
+        except Exception:
+            pass  # If we can't parse, don't block
+
+    # [S5] YES price floor
+    yes_price = float(market.get("yes_price", 0) or 0)
+    no_price  = float(market.get("no_price", 0) or 0)
+    if yes_price < 0.25 and yes_price > 0:  # potential BUY_YES
+        return False, f"Sports YES price {yes_price:.3f} < 0.25 — lottery ticket, no edge"
+
+    # [S6] NO price ceiling (tighter than global 0.82 guard)
+    if no_price > 0.75:
+        return False, f"Sports NO price {no_price:.3f} > 0.75 — market already decided favorite"
+
+    # [S10] Total sports exposure cap: 10% of equity
+    max_sports_total = equity * 0.10
+    if ss.get("exposure_total", 0) >= max_sports_total:
+        return False, f"Sports total exposure ${ss['exposure_total']:.0f} >= 10% of equity (${max_sports_total:.0f})"
+
+    return True, "ok"
 
 SIZE_MIN        = {"NORMAL": 50,    "RECOVERY": 25,    "EXPANSION": 75,     "PAUSED": 0}
 SIZE_MAX        = {"NORMAL": 150,   "RECOVERY": 75,    "EXPANSION": 200,    "PAUSED": 0}
@@ -1187,9 +1310,9 @@ If UW smart_money or insider_trades are high (>3) and align with your direction,
 CRITICAL — Information Asymmetry Test: Before returning BUY_YES or BUY_NO, ask: 'What specific information do I have that the current price does NOT already reflect?' If your answer is 'I agree with the market consensus' or 'I can imagine this scenario' — return PASS. Only trade if you have a specific breaking catalyst the market has not yet repriced.
 
 HARD PASS rules (return PASS immediately, no exceptions):
-- ANY sports market (NBA, NHL, NFL, soccer, baseball, tennis, etc.) — you have no edge vs in-play pricing
 - YES price < 0.08 without a confirmed breaking catalyst directly enabling the outcome
-- Market you already assessed as BUY in the last 24 hours (avoid fragmented re-entry)"""
+- Market you already assessed as BUY in the last 24 hours (avoid fragmented re-entry)
+- SPORTS markets: PASS unless you can name a SPECIFIC typed catalyst — confirmed injury/lineup change, OR line movement ≥5pp in 24h, OR named statistical model (FiveThirtyEight/ESPN BPI). 'Better team' and 'stronger record' are NOT catalysts. If you cannot name one, return PASS."""
 
     sys_text = (
         "You are a quantitative prediction market trader. Output ONLY valid JSON.\n"
@@ -2114,6 +2237,15 @@ def run_cycle(client, state):
         if held_side and held_side != want_side:
             log(f"  SKIP (holding {held_side}, agent wants {want_side} — conflict): {m['question'][:50]}", Fore.YELLOW)
             continue
+
+        # ── Sports policy gate ──────────────────────────────────────────────────
+        if is_sports_market(m.get("question", "") + " " + m.get("title", "")):
+            allowed, reason = check_sports_eligibility(m, state, equity_now)
+            if not allowed:
+                log(f"  SKIP [SPORTS POLICY] {reason}: {m['question'][:45]}", Fore.YELLOW)
+                save_state(state)  # persist circuit-breaker state updates
+                continue
+            log(f"  [SPORTS] Passed eligibility gate: {m['question'][:45]}", Fore.MAGENTA)
 
         # ── UW signal edge boost / veto ────────────────────────────────────────
         uw_sig  = m.get("_uw_yes_sig") if action == "BUY_YES" else m.get("_uw_no_sig")
