@@ -180,77 +180,137 @@ def _save_weather_trades(trades: dict):
         _log(f"Failed to save weather trades: {e}", Fore.YELLOW)
 
 
-def fetch_nws_high(grid_id: str, grid_x: int, grid_y: int, target_date: str) -> float | None:
+def fetch_ensemble_members(lat: float, lon: float, tz: str,
+                           target_date: str, unit: str) -> list[float]:
     """
-    Fetch NWS hourly forecast and return expected high temp (°F) for target_date.
-    target_date: 'YYYY-MM-DD'
+    Fetch ECMWF 50-member ensemble from Open-Meteo and return
+    the daily high temperature for each member on target_date.
+
+    Using the ensemble endpoint instead of a single point forecast gives us
+    a real probability distribution over outcomes rather than a Gaussian
+    approximation. This is the gold standard for weather probability estimation.
+
+    Returns list of floats (one per ensemble member). Empty list on failure.
+    """
+    try:
+        temp_unit = "fahrenheit" if unit == "F" else "celsius"
+        r = requests.get(
+            "https://ensemble-api.open-meteo.com/v1/ensemble",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "hourly": "temperature_2m",
+                "temperature_unit": temp_unit,
+                "forecast_days": 10,
+                "timezone": tz,
+                "models": "ecmwf_ifs025",   # 50-member ECMWF ensemble (best available free)
+            },
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return []
+        hourly = r.json().get("hourly", {})
+        member_keys = [k for k in hourly if k.startswith("temperature_2m_member")]
+        times = hourly.get("time", [])
+
+        member_highs = []
+        for mk in member_keys:
+            vals = hourly[mk]
+            day_temps = [v for t, v in zip(times, vals)
+                         if t.startswith(target_date) and v is not None]
+            if day_temps:
+                member_highs.append(float(max(day_temps)))
+        return member_highs
+    except Exception as e:
+        _log(f"Ensemble fetch error ({lat},{lon}): {e}", Fore.YELLOW)
+        return []
+
+
+def fetch_nws_members(grid_id: str, grid_x: int, grid_y: int,
+                      target_date: str) -> list[float]:
+    """
+    For US cities: fetch NWS deterministic forecast as a single point,
+    then also get ECMWF ensemble (lat/lon needed).
+    Falls back to single NWS value if ensemble unavailable.
+    Returns list with either 1 value (NWS only) or 50 values (ensemble).
     """
     try:
         url = f"https://api.weather.gov/gridpoints/{grid_id}/{grid_x},{grid_y}/forecast/hourly"
         r = requests.get(url, timeout=15,
                          headers={"User-Agent": "polymarket-weather-scout/1.0"})
         if r.status_code != 200:
-            return None
+            return []
         periods = r.json()["properties"]["periods"]
         day_temps = [p["temperature"] for p in periods if p["startTime"][:10] == target_date]
         if not day_temps:
-            return None
-        return float(max(day_temps))
+            return []
+        return [float(max(day_temps))]  # Single NWS deterministic point
     except Exception as e:
-        _log(f"NWS fetch error for {grid_id}/{grid_x},{grid_y}: {e}", Fore.YELLOW)
-        return None
+        _log(f"NWS fetch error {grid_id}/{grid_x},{grid_y}: {e}", Fore.YELLOW)
+        return []
 
 
-def fetch_openmeteo_high(lat: float, lon: float, tz: str, target_date: str, unit: str) -> float | None:
+def get_city_ensemble(city: str, target_date: str) -> tuple[list[float], str]:
     """
-    Fetch Open-Meteo hourly forecast and return expected high for target_date.
-    unit: 'C' or 'F'
+    Returns (ensemble_members, unit) for a city on a given date.
+    For international cities: 50-member ECMWF ensemble (highest quality).
+    For US cities: ECMWF ensemble via lat/lon (same quality).
+    Falls back to NWS single point if ensemble unavailable.
+    Returns (members_list, unit). Members list has 50 values (or 1 for NWS fallback).
     """
-    try:
-        temp_unit = "fahrenheit" if unit == "F" else "celsius"
-        r = requests.get("https://api.open-meteo.com/v1/forecast", params={
-            "latitude": lat,
-            "longitude": lon,
-            "hourly": "temperature_2m",
-            "temperature_unit": temp_unit,
-            "forecast_days": 10,
-            "timezone": tz,
-        }, timeout=15)
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        times = data["hourly"]["time"]
-        temps = data["hourly"]["temperature_2m"]
-        day_temps = [temp for t, temp in zip(times, temps)
-                     if t[:10] == target_date and temp is not None]
-        if not day_temps:
-            return None
-        return float(max(day_temps))
-    except Exception as e:
-        _log(f"Open-Meteo error ({lat},{lon}): {e}", Fore.YELLOW)
-        return None
+    cfg = CITY_CONFIGS.get(city)
+    if not cfg:
+        return [], "?"
+
+    unit = cfg.get("unit", "C")
+    tz   = cfg.get("tz", "UTC")
+
+    # Always try ensemble first (works for all cities via lat/lon)
+    if "lat" in cfg:
+        lat, lon = cfg["lat"], cfg["lon"]
+    elif "nws_grid" in cfg:
+        # For NWS cities, get lat/lon from the NWS grid metadata
+        _NWS_LATLON = {
+            "Chicago":       (41.8827, -87.6233),
+            "New York City":  (40.7128, -74.0060),
+            "Dallas":         (32.7767, -96.7970),
+            "Seattle":        (47.6062, -122.3321),
+            "Houston":        (29.7604, -95.3698),
+            "Los Angeles":    (34.0522, -118.2437),
+        }
+        lat, lon = _NWS_LATLON.get(city, (0, 0))
+        if lat == 0:
+            # Fallback to NWS single point
+            grid_id, grid_x, grid_y = cfg["nws_grid"]
+            members = fetch_nws_members(grid_id, grid_x, grid_y, target_date)
+            return members, unit
+    else:
+        return [], unit
+
+    # Fetch ECMWF ensemble
+    members = fetch_ensemble_members(lat, lon, tz, target_date, unit)
+    if members:
+        return members, unit
+
+    # Fallback to NWS if ensemble failed and this is a US city
+    if "nws_grid" in cfg:
+        grid_id, grid_x, grid_y = cfg["nws_grid"]
+        nws_members = fetch_nws_members(grid_id, grid_x, grid_y, target_date)
+        return nws_members, unit
+
+    return [], unit
 
 
 def get_city_forecast_high(city: str, target_date: str) -> tuple[float | None, str]:
     """
-    Returns (forecast_high, unit) for a city on a given date.
+    Legacy compatibility shim — returns (mean_ensemble_high, unit).
+    Used by oracle_check_weather in autotrader.py.
     """
-    cfg = CITY_CONFIGS.get(city)
-    if not cfg:
-        return None, "?"
-
-    unit = cfg.get("unit", "C")
-
-    if "nws_grid" in cfg:
-        grid_id, grid_x, grid_y = cfg["nws_grid"]
-        high = fetch_nws_high(grid_id, grid_x, grid_y, target_date)
-        return high, unit
-    else:
-        lat = cfg["lat"]
-        lon = cfg["lon"]
-        tz  = cfg.get("tz", "UTC")
-        high = fetch_openmeteo_high(lat, lon, tz, target_date, unit)
-        return high, unit
+    members, unit = get_city_ensemble(city, target_date)
+    if not members:
+        return None, unit
+    import statistics
+    return statistics.mean(members), unit
 
 
 def parse_bucket(question: str, unit: str) -> tuple[float | None, float | None, bool]:
@@ -299,14 +359,38 @@ def parse_bucket(question: str, unit: str) -> tuple[float | None, float | None, 
     return (None, None, False)
 
 
+def ensemble_prob_for_bucket(members: list[float], low: float, high: float,
+                              is_gte: bool) -> float:
+    """
+    Compute bucket probability directly from ECMWF ensemble members.
+    Each member is one physics simulation of the atmosphere — the fraction
+    of members landing in the bucket IS the probability (frequentist).
+
+    This replaces the Gaussian approximation with actual model output.
+    50 members gives ~2% resolution (each member = 2pp).
+
+    Bucket definitions:
+      is_gte=True:  P(X >= low) — "X°C or higher"
+      low==-999:    P(X <= high) — "X°C or below"
+      else:         P(low <= X < high+1) — "between X-Y°"
+    """
+    if not members:
+        return 0.0
+    n = len(members)
+    if is_gte:
+        count = sum(1 for h in members if h >= low)
+    elif low == -999.0:
+        count = sum(1 for h in members if h <= high)
+    else:
+        count = sum(1 for h in members if low <= h < high + 1.0)
+    return count / n
+
+
 def forecast_prob_for_bucket(forecast_high: float, low: float, high: float, is_gte: bool,
                               uncertainty_f: float = 2.0) -> float:
     """
-    Estimate probability that actual high falls in the bucket [low, high).
-    Uses a Gaussian model centered on forecast_high with std=uncertainty_f (in °F or °C).
-
-    uncertainty_f: forecast standard deviation. 2°F ≈ 1.1°C is appropriate for
-    24-48h NWS/Open-Meteo forecasts.
+    Gaussian fallback when ensemble members are unavailable (e.g. NWS single point).
+    Uses a normal distribution centered on forecast_high with given std.
     """
     import math
 
@@ -314,17 +398,12 @@ def forecast_prob_for_bucket(forecast_high: float, low: float, high: float, is_g
         return 0.5 * (1 + math.erf((x - mu) / (sigma * math.sqrt(2))))
 
     sigma = uncertainty_f
-
     if is_gte:
-        # P(X >= low)
         prob = 1.0 - normal_cdf(low, forecast_high, sigma)
     elif low == -999.0:
-        # P(X <= high)
         prob = normal_cdf(high + 0.5, forecast_high, sigma)
     else:
-        # P(low <= X < high+1) — bucket covers [low, high+0.999]
         prob = normal_cdf(high + 0.999, forecast_high, sigma) - normal_cdf(low, forecast_high, sigma)
-
     return max(0.0, min(1.0, prob))
 
 
@@ -638,15 +717,20 @@ if __name__ == "__main__":
 
         cache_key = f"{city}:{target_date}"
         if cache_key not in city_date_forecasts:
-            forecast_high, _ = get_city_forecast_high(city, target_date)
-            city_date_forecasts[cache_key] = forecast_high
+            members, _ = get_city_ensemble(city, target_date)
+            city_date_forecasts[cache_key] = members
 
-        forecast_high = city_date_forecasts.get(cache_key)
-        if forecast_high is None:
+        members = city_date_forecasts.get(cache_key, [])
+        if not members:
             continue
 
-        uncertainty = 2.0 if unit == "F" else 1.1
-        prob = forecast_prob_for_bucket(forecast_high, low, high, is_gte, uncertainty)
+        import statistics as _stat
+        forecast_high = _stat.mean(members)
+        if len(members) > 1:
+            prob = ensemble_prob_for_bucket(members, low, high, is_gte)
+        else:
+            uncertainty = 2.0 if unit == "F" else 1.1
+            prob = forecast_prob_for_bucket(members[0], low, high, is_gte, uncertainty)
 
         yes_token_id = clob_ids[0] if isinstance(clob_ids[0], str) else str(clob_ids[0])
         mid = get_market_mid(yes_token_id)
