@@ -2306,6 +2306,17 @@ def run_cycle(client, state):
             break
 
     log(f"Cycle complete. {trades_placed} new trades placed. Mode: {mode}", Fore.CYAN)
+
+    # ── 10. Weather scout (separate from LLM scoring — pure forecast arb) ────────
+    if mode != "PAUSED" and allow_new_trades:
+        try:
+            from weather_scout import run_weather_scout
+            weather_placed = run_weather_scout(client, state, equity_now)
+            if weather_placed:
+                log(f"[WEATHER] {len(weather_placed)} weather trade(s) placed", Fore.CYAN)
+        except Exception as we:
+            log(f"[WEATHER] Scout error (non-fatal): {we}", Fore.YELLOW)
+
     save_state(state)
     return state
 
