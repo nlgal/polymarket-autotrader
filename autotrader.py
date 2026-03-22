@@ -489,6 +489,8 @@ ORDER_TTL_MINUTES     = 20
 PROFIT_TARGET         = 0.80
 STOP_LOSS             = 0.35
 NEAR_RESOLUTION_THRESHOLD = 0.94
+PROFIT_LOCK_GAIN      = 0.40    # Sell half when unrealized gain on NO position ≥ 40%
+PROFIT_LOCK_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profit_locks.json")
 MAX_PER_MARKET_USDC   = 200   # Never put more than $200 into a single market
 MIN_FREE_BALANCE      = 20    # Always keep $20 free (Polymarket minimum)
 
@@ -563,6 +565,46 @@ SPORTS_KEYWORDS = [
 def is_blacklisted(question: str) -> bool:
     q = question.lower()
     return any(kw in q for kw in MARKET_BLACKLIST_KEYWORDS)
+
+# ── Category Whitelist ──────────────────────────────────────────────────────────
+# Only trade markets in these approved categories. Everything else is PASS.
+# This replaces the catch-all blacklist approach. 108 "OTHER" trades analyzed:
+# Elon tweet counts, random soccer, one-off events = -$800 net.
+# Explicit allow-list ensures every trade fits our proven edge categories.
+CATEGORY_WHITELIST_KEYWORDS = [
+    # Geopolitical / conflict
+    "iran", "ceasefire", "conflict ends", "forces enter", "regime", "invasion",
+    "ukraine", "russia", "nato", "war", "peace deal", "sanctions",
+    "north korea", "china", "taiwan", "middle east", "nuclear",
+    # Commodity / macro price
+    "crude oil", "brent", "wti", "oil price",
+    "gold", "silver", "copper",
+    "natural gas", "lng",
+    # Macro / economic
+    "fed ", "federal reserve", "interest rate", "fomc", "rate cut", "rate hike",
+    "inflation", "cpi", "gdp", "recession", "unemployment",
+    "ecb", "bank of england", "boj",
+    # Crypto with macro catalyst
+    "bitcoin", "btc", "ethereum", "eth",
+    # Weather / temperature (handled by weather scout but allow scoring too)
+    "highest temperature", "lowest temperature", "temperature in",
+    # Political resolution (US + major)
+    "president", "election", "congress", "senate", "supreme court",
+    "trump", "harris", "biden", "zelensky", "putin", "netanyahu",
+    # Regulatory / major corporate
+    "sec ", "doj ", "fda ", "antitrust", "merger", "ipo",
+    "tariff", "trade war",
+]
+
+def is_approved_category(question: str) -> bool:
+    """
+    Returns True if the market belongs to an approved trading category.
+    Markets that don't match any whitelist keyword are skipped (PASS).
+    Sports markets are handled separately by is_sports_market() and the
+    sports policy gate — they do NOT need to pass this whitelist.
+    """
+    q = question.lower()
+    return any(kw in q for kw in CATEGORY_WHITELIST_KEYWORDS)
 
 def is_sports_market(question: str) -> bool:
     """Returns True if the market is a sports market (routes through sports policy)."""
@@ -1220,10 +1262,17 @@ def score_market(market, mode="NORMAL"):
     if mode == "RECOVERY" and market.get("volume", 0) < 50000:
         return {**market, "action": "PASS", "edge": 0, "confidence": "low",
                 "reasoning": "Recovery mode: low-volume market skipped"}
-    # Skip blacklisted market types — no real model edge on these
+    # Skip blacklisted market types (social noise, in-play markers)
     if is_blacklisted(market.get("question", "") + " " + market.get("title", "")):
         return {**market, "action": "PASS", "edge": 0, "confidence": "low",
                 "reasoning": "Blacklisted market type — no model edge"}
+
+    # Category whitelist: only score markets in approved categories.
+    # Sports are exempt here — they go through the sports policy gate separately.
+    q_full = market.get("question", "") + " " + market.get("title", "")
+    if not is_sports_market(q_full) and not is_approved_category(q_full):
+        return {**market, "action": "PASS", "edge": 0, "confidence": "low",
+                "reasoning": "Not in approved category whitelist — no proven edge"}
 
     # Check market assessment cache — skip API calls if price unchanged within TTL
     cached = _get_cached_score(market)
@@ -1284,14 +1333,57 @@ def score_market(market, mode="NORMAL"):
     except Exception:
         pass
 
+    # ── Whale-flow signal: Polymarket activity for large recent trades ──────────
+    # If wallets (not us) placed $500+ on this market in the last 2 cycles (30 min),
+    # that's directional signal: someone with real information is acting.
+    whale_signal = ""
+    try:
+        _condition_id = market.get("condition_id", "")
+        if _condition_id:
+            _wa_resp = requests.get(
+                "https://data-api.polymarket.com/activity",
+                params={"market": _condition_id, "limit": 50},
+                timeout=8
+            )
+            if _wa_resp.status_code == 200:
+                _wa_acts = _wa_resp.json()
+                import time as _wt
+                _now_ts = _wt.time()
+                _whale_buys_yes = []
+                _whale_buys_no  = []
+                for _wa in _wa_acts:
+                    _ts = _wa.get("timestamp", 0)
+                    if _ts > 1e10: _ts /= 1000
+                    if _now_ts - _ts > 1800:  # Only last 30 min
+                        continue
+                    _sz = float(_wa.get("usdcSize", 0) or 0)
+                    _side = _wa.get("side", "")
+                    _user = _wa.get("proxyWallet", _wa.get("trader", ""))
+                    if _sz >= 300 and _user.lower() != FUNDER.lower():  # $300+ whale
+                        if _side == "BUY":
+                            outcome = _wa.get("outcome", _wa.get("title", ""))
+                            if "yes" in str(outcome).lower():
+                                _whale_buys_yes.append(_sz)
+                            else:
+                                _whale_buys_no.append(_sz)
+                if _whale_buys_yes:
+                    whale_signal += f"WHALE FLOW YES: {len(_whale_buys_yes)} large buy(s) totaling ${sum(_whale_buys_yes):,.0f} in last 30min. "
+                if _whale_buys_no:
+                    whale_signal += f"WHALE FLOW NO: {len(_whale_buys_no)} large buy(s) totaling ${sum(_whale_buys_no):,.0f} in last 30min. "
+                if whale_signal:
+                    log(f"  [WHALE] {whale_signal[:80]}", Fore.MAGENTA)
+    except Exception:
+        pass
+
     # Build consensus block for prompt
     consensus = ""
     source_count = 0
-    if news:        consensus += f"SOURCE 1 (Perplexity/web): {news[:300]}\n"; source_count += 1
-    if rss_signal:  consensus += f"SOURCE 2 (Live RSS feeds): {rss_signal[:300]}\n"; source_count += 1
-    if uw_text:     consensus += f"SOURCE 3 (Unusual Whales smart money): {uw_text[:200]}\n"; source_count += 1
+    if news:         consensus += f"SOURCE 1 (Perplexity/web): {news[:300]}\n"; source_count += 1
+    if rss_signal:   consensus += f"SOURCE 2 (Live RSS feeds): {rss_signal[:300]}\n"; source_count += 1
+    if uw_text:      consensus += f"SOURCE 3 (Unusual Whales smart money): {uw_text[:200]}\n"; source_count += 1
+    if whale_signal: consensus += f"SOURCE 4 (Polymarket whale flow): {whale_signal[:200]}\n"; source_count += 1
     if source_count >= 2:
-        consensus += f"MULTI-SOURCE CONFIDENCE: {source_count}/3 sources have data — weight accordingly.\n"
+        consensus += f"MULTI-SOURCE CONFIDENCE: {source_count}/4 sources have data — weight accordingly.\n"
 
     prompt = f"""MARKET: {market['question']}
 YES price: ${market['yes_price']:.3f} | NO price: ${market['no_price']:.3f}
@@ -1487,8 +1579,8 @@ def calculate_size(edge, mode, equity_now, deployed, market_price=0.5, source_co
     size = SIZE_MIN[mode] + (SIZE_MAX[mode] - SIZE_MIN[mode]) * edge_strength
 
     # Conviction multiplier: more sources = more confidence = bigger size
-    # source_count=1: no bonus | 2: +25% headroom | 3: +60% headroom
-    conv_bonus = {1: 0.0, 2: 0.25, 3: 0.60}.get(min(source_count, 3), 0.0)
+    # source_count=1: no bonus | 2: +25% | 3: +60% | 4 (whale): +80%
+    conv_bonus = {1: 0.0, 2: 0.25, 3: 0.60, 4: 0.80}.get(min(source_count, 4), 0.0)
     if conv_bonus > 0:
         headroom = SIZE_MAX[mode] - size
         size = size + headroom * conv_bonus
@@ -1832,6 +1924,48 @@ def manage_positions(client):
             elif no_current >= NEAR_RESOLUTION_THRESHOLD:
                 should_sell = True
                 reason = f"NO near resolution at ${no_current:.3f} — locking in gain"
+
+        # ── Profit-lock: sell HALF when unrealized gain ≥ 40% (NO positions) ──────
+        # Locking in half preserves capital while keeping upside on the remainder.
+        # Persisted to profit_locks.json so we don't re-trigger after a restart.
+        if not should_sell and trade_side == "SELL" and shares > 5:
+            no_entry   = 1.0 - avg_entry
+            no_current = 1.0 - current_price
+            gain_pct   = (no_current - no_entry) / no_entry if no_entry > 0 else 0
+            try:
+                pl_data = json.load(open(PROFIT_LOCK_FILE)) if os.path.exists(PROFIT_LOCK_FILE) else {}
+            except Exception:
+                pl_data = {}
+            if gain_pct >= PROFIT_LOCK_GAIN and token_id not in pl_data:
+                half_shares = round(shares / 2, 2)
+                log(f"[PROFIT-LOCK] NO position +{gain_pct*100:.0f}% gain — selling half ({half_shares} shares)", Fore.GREEN)
+                tg(f"🔒 <b>Profit-lock: selling half</b>\nNO gain {gain_pct*100:.0f}% (entry {no_entry:.3f} → now {no_current:.3f})\nSelling {half_shares} of {shares:.0f} shares to lock gain")
+                try:
+                    from py_clob_client.order_builder.constants import SELL as _SELL
+                    from py_clob_client.clob_types import OrderArgs as _OA, OrderType as _OT, PartialCreateOrderOptions as _PCO
+                    _tick     = client.get_tick_size(token_id)
+                    _neg_risk = client.get_neg_risk(token_id)
+                    _tick_f   = float(_tick)
+                    _tick_dec = len(str(_tick).rstrip("0").split(".")[-1]) if "." in str(_tick) else 0
+                    _sp = round(round(current_price / _tick_f) * _tick_f, _tick_dec)
+                    _sp = max(0.01, min(0.99, _sp))
+                    _args = _OA(token_id=token_id, price=_sp, size=half_shares, side=_SELL)
+                    _opts = _PCO(tick_size=_tick, neg_risk=_neg_risk)
+                    _signed  = client.create_order(_args, _opts)
+                    _receipt = client.post_order(_signed, _OT.GTC)
+                    if _receipt.get("success"):
+                        _pnl = (_sp - avg_entry) * half_shares
+                        log(f"[PROFIT-LOCK] ✓ Sold {half_shares} @ {_sp:.3f} | locked P&L ${_pnl:+.2f}", Fore.GREEN)
+                        pl_data[token_id] = {"fired_at": time.time(), "shares_sold": half_shares, "price": _sp}
+                        try:
+                            with open(PROFIT_LOCK_FILE, "w") as _f:
+                                json.dump(pl_data, _f)
+                        except Exception:
+                            pass
+                    else:
+                        log(f"[PROFIT-LOCK] Sell failed: {_receipt.get('errorMsg','')}", Fore.RED)
+                except Exception as _e:
+                    log(f"[PROFIT-LOCK] Error: {_e}", Fore.YELLOW)
 
         if should_sell:
             log(f"SELL SIGNAL: {reason}", Fore.CYAN)
