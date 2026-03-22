@@ -1682,6 +1682,252 @@ def cancel_and_resubmit_stale_orders(client, current_markets_by_token):
 
 
 # =============================================================================
+# =============================================================================
+#  ORACLE CHECK (FINAL 24H)
+#  In the last 24 hours before market resolution, bypass LLM and query the
+#  actual settlement source directly:
+#    - Weather markets → Weather Underground station data
+#    - Geopolitical/macro → Perplexity forced "what happened today" query
+#  Result directly updates the position hold/sell decision.
+# =============================================================================
+
+ORACLE_CHECK_WINDOW_H = 24.0   # Only run oracle check inside this window
+
+def oracle_check_weather(position: dict) -> dict | None:
+    """
+    For weather temperature markets expiring in <24h, fetch the actual
+    recorded temperature from Weather Underground (the settlement source).
+    Returns {"verdict": "HOLD"|"SELL"|"UNKNOWN", "reason": str, "data": str}
+    """
+    title = position.get("title", "")
+    resolution_src = position.get("resolutionSource", "")
+
+    # Only handle temperature markets
+    if "temperature" not in title.lower() and "temperature" not in resolution_src.lower():
+        return None
+
+    try:
+        import re as _re
+        from datetime import datetime as _dt, timezone as _tz
+
+        # Extract city from title ("highest temperature in CITY on DATE")
+        city_match = _re.search(r'temperature in ([\w\s]+?) (?:be|on)', title, _re.IGNORECASE)
+        city = city_match.group(1).strip() if city_match else ""
+
+        # Parse bucket from position outcome/title  
+        outcome = position.get("outcome", "")  # e.g. "Yes" means we hold YES
+        avg_price = float(position.get("avgPrice", 0) or 0)
+
+        # Extract target temp from title
+        temp_match = _re.search(r'be (\d+)(?:\s*[\u00b0\u2103\u2109]|\s*[CF]|\s*degrees)', title)
+        range_match = _re.search(r'between (\d+)[\s\-]+(\d+)', title)
+        gte_match   = _re.search(r'(\d+)[\s\u00b0CF]* or higher', title, _re.IGNORECASE)
+        lte_match   = _re.search(r'(\d+)[\s\u00b0CF]* or (?:below|lower)', title, _re.IGNORECASE)
+
+        if range_match:
+            bucket_low  = float(range_match.group(1))
+            bucket_high = float(range_match.group(2))
+            is_gte = False
+        elif gte_match:
+            bucket_low  = float(gte_match.group(1))
+            bucket_high = 9999.0
+            is_gte = True
+        elif lte_match:
+            bucket_low  = -999.0
+            bucket_high = float(lte_match.group(1))
+            is_gte = False
+        elif temp_match:
+            bucket_low  = float(temp_match.group(1))
+            bucket_high = bucket_low + 1.0
+            is_gte = False
+        else:
+            return {"verdict": "UNKNOWN", "reason": "Could not parse bucket from title", "data": ""}
+
+        # Get forecast from weather scout cities
+        from weather_scout import get_city_forecast_high, CITY_CONFIGS
+        unit = "C"
+        for _city, _cfg in CITY_CONFIGS.items():
+            if _city.lower() in city.lower() or city.lower() in _city.lower():
+                unit = _cfg.get("unit", "C")
+                # Use today's date for oracle (market expiring today/tomorrow)
+                today = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+                forecast_high, _ = get_city_forecast_high(_city, today)
+                if forecast_high is not None:
+                    # Does the forecast land in our bucket?
+                    in_bucket = False
+                    if is_gte:
+                        in_bucket = forecast_high >= bucket_low
+                    elif bucket_low == -999.0:
+                        in_bucket = forecast_high <= bucket_high
+                    else:
+                        in_bucket = bucket_low <= forecast_high < bucket_high + 1.0
+
+                    verdict = "HOLD" if in_bucket else "SELL"
+                    reason  = (f"Oracle: {_city} forecast high = {forecast_high:.1f}°{unit}. "
+                               f"Bucket [{bucket_low},{bucket_high}] → {'IN BUCKET' if in_bucket else 'NOT in bucket'}")
+                    log(f"[ORACLE] {title[:55]} → {verdict}: {reason}", Fore.MAGENTA)
+                    return {"verdict": verdict, "reason": reason,
+                            "data": f"{forecast_high:.1f}°{unit}"}
+                break
+
+        return {"verdict": "UNKNOWN", "reason": f"No forecast for {city}", "data": ""}
+
+    except Exception as e:
+        log(f"[ORACLE] Weather check error: {e}", Fore.YELLOW)
+        return {"verdict": "UNKNOWN", "reason": str(e), "data": ""}
+
+
+def oracle_check_geopolitical(position: dict, pplx_key: str) -> dict | None:
+    """
+    For geopolitical/macro markets in final 24h, query Perplexity with a
+    forced real-time prompt: "Has [outcome] actually happened today?"
+    Returns {"verdict": "HOLD"|"SELL"|"UNKNOWN", "reason": str}
+    """
+    title   = position.get("title", "")
+    outcome = position.get("outcome", "")  # "Yes" or "No"
+    avg_p   = float(position.get("avgPrice", 0) or 0)
+
+    geo_kw = ["iran", "ceasefire", "regime", "ukraine", "russia", "war", "invasion",
+               "nato", "north korea", "china", "taiwan", "forces enter", "conflict ends"]
+    if not any(kw in title.lower() for kw in geo_kw):
+        return None  # Not a geopolitical market
+
+    if not pplx_key:
+        return None
+
+    try:
+        prompt = (
+            f"Market question: '{title}'\n"
+            f"We hold a {outcome.upper()} position (entry price {avg_p:.3f}).\n"
+            f"This market resolves TODAY or TOMORROW. \n\n"
+            f"Search for the very latest news (last 24 hours) and answer:\n"
+            f"Has the '{outcome.upper()}' outcome already happened or is it clearly about to happen?\n"
+            f"Or has something happened that makes '{outcome.upper()}' impossible or very unlikely?\n\n"
+            f"Respond in ONE line: HOLDS | SELL | UNCERTAIN, then one sentence explaining why."
+        )
+        r = requests.post(
+            "https://api.perplexity.ai/chat/completions",
+            json={
+                "model": "sonar",
+                "messages": [
+                    {"role": "system", "content": "You are a prediction market analyst. Use real-time search. Be direct and specific."},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": 120,
+                "temperature": 0.0,
+            },
+            headers={"Authorization": f"Bearer {pplx_key}", "Content-Type": "application/json"},
+            timeout=20,
+        )
+        resp_text = r.json()["choices"][0]["message"]["content"].strip()
+        first_line = resp_text.split("\n")[0].upper()
+        if "SELL" in first_line:
+            verdict = "SELL"
+        elif "HOLDS" in first_line or "HOLD" in first_line:
+            verdict = "HOLD"
+        else:
+            verdict = "UNCERTAIN"
+        log(f"[ORACLE] Geo check {title[:45]} → {verdict}: {resp_text[:80]}", Fore.MAGENTA)
+        return {"verdict": verdict, "reason": resp_text[:200]}
+    except Exception as e:
+        log(f"[ORACLE] Geo check error: {e}", Fore.YELLOW)
+        return None
+
+
+def run_oracle_checks(client):
+    """
+    Run oracle checks on all open positions expiring in <24h.
+    If oracle returns SELL with high confidence, executes the exit.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    pplx_key = os.environ.get("PERPLEXITY_API_KEY", "").strip()
+    now = _dt.now(_tz.utc)
+
+    try:
+        pos_resp = requests.get(
+            f"https://data-api.polymarket.com/positions?user={FUNDER}&limit=20",
+            timeout=10
+        )
+        if pos_resp.status_code != 200:
+            return
+        positions = pos_resp.json()
+    except Exception as e:
+        log(f"[ORACLE] Positions fetch failed: {e}", Fore.YELLOW)
+        return
+
+    for p in positions:
+        cur_val  = float(p.get("currentValue", 0) or 0)
+        if cur_val < 20:
+            continue
+
+        # Check time to expiry
+        end_date_str = p.get("endDate", "")
+        if not end_date_str:
+            continue
+        try:
+            end_dt = _dt.fromisoformat(end_date_str.replace("Z", "+00:00"))
+            hours_left = (end_dt - now).total_seconds() / 3600
+        except Exception:
+            continue
+
+        if hours_left > ORACLE_CHECK_WINDOW_H or hours_left < 0:
+            continue  # Outside oracle window
+
+        title   = p.get("title", "")
+        outcome = p.get("outcome", "")
+        token_id = p.get("asset", "")
+        size     = float(p.get("size", 0) or 0)
+
+        log(f"[ORACLE] Checking {title[:50]} ({hours_left:.1f}h left)", Fore.MAGENTA)
+
+        # Try weather oracle first
+        oracle_result = oracle_check_weather(p)
+
+        # Then geopolitical if not weather
+        if oracle_result is None:
+            oracle_result = oracle_check_geopolitical(p, pplx_key)
+
+        if oracle_result is None or oracle_result["verdict"] == "UNKNOWN":
+            log(f"[ORACLE] No oracle available for {title[:40]}", Fore.YELLOW)
+            continue
+
+        verdict = oracle_result["verdict"]
+        reason  = oracle_result["reason"]
+
+        if verdict == "SELL":
+            log(f"[ORACLE] SELL signal — exiting {title[:45]}: {reason[:80]}", Fore.RED)
+            tg(f"⚠️ <b>Oracle exit (final 24h)</b>\n{title[:60]}\nReason: {reason[:150]}\nSelling ${cur_val:.0f} position")
+            # Execute the sell
+            try:
+                from py_clob_client.order_builder.constants import SELL as _SELL
+                from py_clob_client.clob_types import OrderArgs as _OA, OrderType as _OT, PartialCreateOrderOptions as _PCO
+                _book = client.get_midpoint(token_id)
+                _mid  = float(_book.get("mid", 0.5))
+                _tick     = client.get_tick_size(token_id)
+                _neg_risk = client.get_neg_risk(token_id)
+                _tick_f   = float(_tick)
+                _tick_dec = len(str(_tick).rstrip("0").split(".")[-1]) if "." in str(_tick) else 0
+                _sp = round(round(_mid / _tick_f) * _tick_f, _tick_dec)
+                _sp = max(0.01, min(0.99, _sp))
+                _args = _OA(token_id=token_id, price=_sp, size=round(size, 2), side=_SELL)
+                _opts = _PCO(tick_size=_tick, neg_risk=_neg_risk)
+                _signed  = client.create_order(_args, _opts)
+                _receipt = client.post_order(_signed, _OT.GTC)
+                if _receipt.get("success"):
+                    avg_p = float(p.get("avgPrice", 0) or 0)
+                    pnl = (_sp - avg_p) * size
+                    log(f"[ORACLE] ✓ SOLD @ {_sp:.3f} | P&L ${pnl:+.2f}", Fore.GREEN)
+                    tg(f"✅ <b>Oracle exit executed</b>\n{title[:55]}\nSold @ {_sp:.3f} | P&L ${pnl:+.2f}")
+                else:
+                    log(f"[ORACLE] Sell failed: {_receipt.get('errorMsg','')}", Fore.RED)
+            except Exception as se:
+                log(f"[ORACLE] Sell error: {se}", Fore.YELLOW)
+
+        elif verdict == "HOLD":
+            log(f"[ORACLE] HOLD confirmed — {title[:45]}: {reason[:80]}", Fore.GREEN)
+
+
+# =============================================================================
 #  THESIS INVALIDATION EXIT
 #  Every cycle, re-checks news on open positions valued > $50.
 #  If Perplexity + Claude both say the original thesis is broken,
@@ -2479,9 +2725,11 @@ def main():
 
     cycle = 0
     markets_cache = []       # Shared market list between full scans and news arb
-    last_full_scan = 0       # Timestamp of last 15-min full scan
-    last_news_scan = 0       # Timestamp of last 5-min news arb scan
-    last_review    = 0       # Timestamp of last weekly pattern review
+    last_full_scan    = 0       # Timestamp of last 15-min full scan
+    last_news_scan    = 0       # Timestamp of last 5-min news arb scan
+    last_review       = 0       # Timestamp of last weekly pattern review
+    last_urgency_scan = 0       # Timestamp of last 30-min urgency rescore
+    last_oracle_check = 0       # Timestamp of last oracle check (final-24h positions)
 
     # ── Crash-loop circuit breaker ────────────────────────────────────────────
     # Tracks rapid consecutive errors. If the bot crashes 5 times in <10 min,
@@ -2519,6 +2767,47 @@ def main():
                 except Exception as e:
                     log(f"[NEWS ARB] Error: {e}", Fore.YELLOW)
                 last_news_scan = time.time()
+
+            # ── Oracle check every 30 min (final-24h positions) ──────────────
+            elif now - last_oracle_check >= 1800:
+                try:
+                    run_oracle_checks(client)
+                except Exception as oe:
+                    log(f"[ORACLE] Check error (non-fatal): {oe}", Fore.YELLOW)
+                last_oracle_check = time.time()
+
+            # ── Urgency rescore every 30 min (markets expiring <72h) ─────────
+            elif now - last_urgency_scan >= 1800:
+                log("[URGENCY] Scanning for near-expiry opportunities...", Fore.MAGENTA)
+                try:
+                    from datetime import datetime as _udt, timezone as _utz
+                    _now_u = _udt.now(_utz.utc)
+                    _urgent = [m for m in markets_cache if m.get("end_date") and
+                               0 < (_udt.fromisoformat(m["end_date"].replace("Z","+00:00")) - _now_u
+                                    ).total_seconds() / 3600 < 72]
+                    if _urgent:
+                        log(f"[URGENCY] {len(_urgent)} markets expiring <72h — force-rescoring", Fore.MAGENTA)
+                        # Bust cache for these markets so they get a fresh LLM score
+                        for _um in _urgent:
+                            _key = _um.get("condition_id") or _um.get("question","")[:80]
+                            if _key in _market_cache:
+                                del _market_cache[_key]
+                        equity_u = get_equity(client)
+                        if equity_u:
+                            mode_u = state.get("mode", "NORMAL")
+                            _uscored = score_batch(_urgent, mode=mode_u)
+                            _uact = [m for m in _uscored if m.get("action") in ("BUY_YES","BUY_NO")]
+                            if _uact:
+                                log(f"[URGENCY] {len(_uact)} actionable near-expiry signal(s)", Fore.GREEN)
+                                for _um2 in _uact[:3]:  # cap at 3 urgency trades
+                                    _ua = _um2["action"]
+                                    _ue = _um2.get("edge", 0)
+                                    _usize = min(50.0, max(10.0, equity_u * 0.01))  # 1% equity, cap $50
+                                    log(f"  [URGENCY] {_ua} edge={_ue:+.3f}: {_um2.get('question','')[:50]}", Fore.GREEN)
+                                    place_trade(client, _um2, _ua, _usize)
+                except Exception as ue:
+                    log(f"[URGENCY] Rescore error (non-fatal): {ue}", Fore.YELLOW)
+                last_urgency_scan = time.time()
 
             # ── Weekly intelligence review (every 7 days) ─────────────────
             elif time.time() - last_review >= 7 * 24 * 3600:
