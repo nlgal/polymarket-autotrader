@@ -1537,6 +1537,7 @@ def place_trade(client, market, action, size_usdc):
             log_trade_outcome(market, action, size_usdc, market.get("edge", 0), receipt)
             # Pre-approve conditional token allowance so we can sell this position later
             try:
+                from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
                 client.update_balance_allowance(
                     params=BalanceAllowanceParams(
                         asset_type=AssetType.CONDITIONAL,
@@ -2238,6 +2239,7 @@ def manage_positions(client):
                         # Set conditional token allowance then retry once
                         log(f"  Setting conditional token allowance for sell, retrying...", Fore.YELLOW)
                         try:
+                            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
                             client.update_balance_allowance(
                                 params=BalanceAllowanceParams(
                                     asset_type=AssetType.CONDITIONAL,
@@ -2263,6 +2265,7 @@ def manage_positions(client):
                     # Set conditional token allowance then retry once
                     log(f"  Setting conditional token allowance for sell, retrying...", Fore.YELLOW)
                     try:
+                        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
                         client.update_balance_allowance(
                             params=BalanceAllowanceParams(
                                 asset_type=AssetType.CONDITIONAL,
