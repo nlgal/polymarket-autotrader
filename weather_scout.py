@@ -525,24 +525,59 @@ def run_weather_scout(client, state: dict, equity: float) -> list[dict]:
         if low is None:
             continue
 
-        # ── Get forecast (cached per city+date) ─────────────────────────────
+        # ── Get ensemble forecast (cached per city+date) ──────────────────────
         cache_key = f"{city}:{target_date}"
         if cache_key not in city_date_forecasts:
-            forecast_high, _ = get_city_forecast_high(city, target_date)
-            city_date_forecasts[cache_key] = forecast_high
-            if forecast_high is not None:
-                _log(f"Forecast {city} {target_date}: {forecast_high:.1f}°{unit}", Fore.CYAN)
-        forecast_high = city_date_forecasts.get(cache_key)
+            members, _ = get_city_ensemble(city, target_date)
+            city_date_forecasts[cache_key] = members
+            if members:
+                import statistics as _stat
+                _log(f"Ensemble {city} {target_date}: mean={_stat.mean(members):.1f}°{unit} "
+                     f"std={(_stat.stdev(members) if len(members)>1 else 0):.2f}°{unit} "
+                     f"({len(members)} members)", Fore.CYAN)
+        members = city_date_forecasts.get(cache_key, [])
 
-        if forecast_high is None:
+        if not members:
             continue
 
-        # ── Estimate probability for this bucket ─────────────────────────────
-        # Use 2°F / 1.1°C uncertainty for 24-48h forecasts
-        uncertainty = 2.0 if unit == "F" else 1.1
-        prob = forecast_prob_for_bucket(forecast_high, low, high, is_gte, uncertainty)
+        import statistics as _stat
+        forecast_high = _stat.mean(members)
+        ensemble_std  = _stat.stdev(members) if len(members) > 1 else 2.0
 
-        if prob < WEATHER_MIN_CONFIDENCE:
+        # ── City tier: per-city thresholds and bucket buffer ──────────────────
+        tier         = get_city_tier(city)
+        tcfg         = TIER_CONFIG[tier]
+        min_prob     = tcfg["min_prob"]
+        max_size_city = tcfg["max_size"]
+        buf_c        = tcfg["extra_buffer_c"]
+
+        # ── Ensemble collapse detection ───────────────────────────────────────
+        # If std < 0.5°C, all members share the same systematic bias (overconfident).
+        # March 23 lesson: Wellington std=0.36°C but actual miss was 2.8°C.
+        if ensemble_std < WEATHER_ENSEMBLE_COLLAPSE_STD:
+            buf_c += WEATHER_COLLAPSE_BUFFER
+            _log(f"  [COLLAPSE] {city} std={ensemble_std:.2f}°{unit} — adding buffer (total={buf_c:.1f}°C)", Fore.YELLOW)
+
+        # Widen bucket by buffer before computing probability
+        buf = buf_c if unit == "C" else buf_c * 1.8
+        buf_low  = low  - buf if low  != -999.0 else low
+        buf_high = high + buf if high != 9999.0 else high
+
+        if len(members) > 1:
+            prob = ensemble_prob_for_bucket(members, buf_low, buf_high, is_gte)
+        else:
+            uncertainty = (2.0 if unit == "F" else 1.1) + buf
+            prob = forecast_prob_for_bucket(members[0], buf_low, buf_high, is_gte, uncertainty)
+
+        # ── Model run freshness penalty ───────────────────────────────────────
+        # ECMWF runs at 00:00 and 12:00 UTC. If >3h into a 12h window, apply -5pp.
+        _utc_hour = datetime.now(timezone.utc).hour
+        _run_age_h = _utc_hour % 12
+        if _run_age_h > WEATHER_STALE_RUN_HOURS:
+            prob = max(0.0, prob - 0.05)
+            _log(f"  [STALE RUN] ECMWF ~{_run_age_h:.0f}h old — prob reduced by 5pp", Fore.YELLOW)
+
+        if prob < min_prob:
             continue
 
         # ── Get current market mid price ─────────────────────────────────────
@@ -568,18 +603,20 @@ def run_weather_scout(client, state: dict, equity: float) -> list[dict]:
 
         # ── Size calculation ─────────────────────────────────────────────────
         remaining_budget = WEATHER_MAX_EXPOSURE - weather_exposure
-        size = min(WEATHER_MAX_PER_TRADE, remaining_budget)
+        # Cap by tier: Tier C cities get max $10 (coastal uncertainty)
+        tier_cap = max_size_city  # from TIER_CONFIG
+        size = min(WEATHER_MAX_PER_TRADE, tier_cap, remaining_budget)
         if size < 5.0:
             _log("Weather budget exhausted", Fore.YELLOW)
             break
 
         # Higher edge = slightly larger size (but still capped)
         if edge > 0.40:
-            size = min(size, WEATHER_MAX_PER_TRADE)
+            size = min(size, tier_cap)
         elif edge > 0.30:
-            size = min(size, 15.0)
+            size = min(size, min(15.0, tier_cap))
         else:
-            size = min(size, 10.0)
+            size = min(size, min(10.0, tier_cap))
 
         # ── Place the trade ──────────────────────────────────────────────────
         _log(
