@@ -1,0 +1,16 @@
+[Unit]
+Description=Polymarket Agent Webhook Executor
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/polymarket-agent
+ExecStart=/opt/polymarket-agent/venv/bin/python3 /opt/polymarket-agent/executor.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
