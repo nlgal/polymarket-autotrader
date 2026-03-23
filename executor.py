@@ -92,6 +92,7 @@ ALLOWED_SCRIPTS = {
     "place_weather_trades.py",
     "place_iran_conflict_no.py",
     "place_weather_march26_27.py",
+    "place_weather_march26.py",
     "place_weather_march28_29.py",
     "place_weather_march30_31.py",
     "reset_state.py",
