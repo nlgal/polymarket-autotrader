@@ -1375,15 +1375,63 @@ def score_market(market, mode="NORMAL"):
     except Exception:
         pass
 
+    # ── GDELT geopolitical signal (SOURCE 5) ────────────────────────────────────
+    # GDELT monitors 435+ news sources in real-time. For geopolitical markets
+    # (Iran, Ukraine, conflict) it provides direct headline evidence of escalation
+    # or de-escalation before Perplexity can summarize. Free, no API key.
+    gdelt_signal = ""
+    _geo_kw = ["iran", "ceasefire", "ukraine", "russia", "north korea",
+               "forces enter", "invasion", "regime", "conflict ends", "war",
+               "china", "taiwan", "nato"]
+    _q_lower = market.get("question", "").lower()
+    if any(kw in _q_lower for kw in _geo_kw):
+        try:
+            import time as _gtime
+            # Build a focused query from the market question
+            _geo_words = [w for w in market.get("question", "").replace("?","").split()
+                          if len(w) > 3 and w.lower() not in
+                          {"will", "the", "a", "an", "be", "by", "in", "on", "is",
+                           "of", "to", "for", "and", "or", "march", "april",
+                           "2026", "2025", "june", "july"}]
+            _geo_query = " ".join(_geo_words[:6])
+            _gtime.sleep(5)  # GDELT rate limit: 1 req / 5 sec
+            _gr = requests.get(
+                "https://api.gdeltproject.org/api/v2/doc/doc",
+                params={
+                    "query": _geo_query,
+                    "mode": "artlist",
+                    "maxrecords": "5",
+                    "format": "json",
+                    "timespan": "48h",
+                    "sort": "date",
+                },
+                timeout=12,
+                headers={"User-Agent": "polymarket-scout/1.0"},
+            )
+            if _gr.status_code == 200:
+                _articles = _gr.json().get("articles", [])
+                if _articles:
+                    _headlines = []
+                    for _a in _articles[:4]:
+                        _t = _a.get("title", "")[:90]
+                        _d = _a.get("seendate", "")[:8]
+                        if _t:
+                            _headlines.append(f"[{_d}] {_t}")
+                    gdelt_signal = "BREAKING ({} articles):\n".format(len(_articles)) + "\n".join(_headlines)
+                    log(f"  [GDELT] {len(_articles)} articles: {_headlines[0][:60]}", Fore.MAGENTA)
+        except Exception as _ge:
+            log(f"  [GDELT] Error: {_ge}", Fore.YELLOW)
+
     # Build consensus block for prompt
     consensus = ""
     source_count = 0
-    if news:         consensus += f"SOURCE 1 (Perplexity/web): {news[:300]}\n"; source_count += 1
-    if rss_signal:   consensus += f"SOURCE 2 (Live RSS feeds): {rss_signal[:300]}\n"; source_count += 1
-    if uw_text:      consensus += f"SOURCE 3 (Unusual Whales smart money): {uw_text[:200]}\n"; source_count += 1
-    if whale_signal: consensus += f"SOURCE 4 (Polymarket whale flow): {whale_signal[:200]}\n"; source_count += 1
+    if news:          consensus += f"SOURCE 1 (Perplexity/web): {news[:300]}\n"; source_count += 1
+    if rss_signal:    consensus += f"SOURCE 2 (Live RSS feeds): {rss_signal[:300]}\n"; source_count += 1
+    if uw_text:       consensus += f"SOURCE 3 (Unusual Whales smart money): {uw_text[:200]}\n"; source_count += 1
+    if whale_signal:  consensus += f"SOURCE 4 (Polymarket whale flow): {whale_signal[:200]}\n"; source_count += 1
+    if gdelt_signal:  consensus += f"SOURCE 5 (GDELT real-time global news): {gdelt_signal[:400]}\n"; source_count += 1
     if source_count >= 2:
-        consensus += f"MULTI-SOURCE CONFIDENCE: {source_count}/4 sources have data — weight accordingly.\n"
+        consensus += f"MULTI-SOURCE CONFIDENCE: {source_count}/5 sources have data — weight accordingly.\n"
 
     prompt = f"""MARKET: {market['question']}
 YES price: ${market['yes_price']:.3f} | NO price: ${market['no_price']:.3f}
@@ -1581,7 +1629,7 @@ def calculate_size(edge, mode, equity_now, deployed, market_price=0.5, source_co
 
     # Conviction multiplier: more sources = more confidence = bigger size
     # source_count=1: no bonus | 2: +25% | 3: +60% | 4 (whale): +80%
-    conv_bonus = {1: 0.0, 2: 0.25, 3: 0.60, 4: 0.80}.get(min(source_count, 4), 0.0)
+    conv_bonus = {1: 0.0, 2: 0.25, 3: 0.60, 4: 0.80, 5: 0.95}.get(min(source_count, 5), 0.0)
     if conv_bonus > 0:
         headroom = SIZE_MAX[mode] - size
         size = size + headroom * conv_bonus
