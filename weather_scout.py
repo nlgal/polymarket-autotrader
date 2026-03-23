@@ -545,7 +545,16 @@ def run_weather_scout(client, state: dict, equity: float) -> list[dict]:
         ensemble_std  = _stat.stdev(members) if len(members) > 1 else 2.0
 
         # ── City tier: per-city thresholds and bucket buffer ──────────────────
-        tier         = get_city_tier(city)
+        # ── Seasonal tier adjustment ─────────────────────────────────────────
+        # Some cities are harder to forecast in specific seasons:
+        #   Paris Mar-May: warm surge events from Atlantic → empirically Tier B
+        #   Beijing Mar-May: Gobi Desert warm advection → up to +5°C in 24h
+        #   Buenos Aires Mar-Apr: late-summer convection → Tier C
+        _month = datetime.now(timezone.utc).month
+        _seasonal_upgrades = {}
+        if 3 <= _month <= 5:
+            _seasonal_upgrades = {"Paris": "B", "Beijing": "B", "Milan": "B"}
+        tier = _seasonal_upgrades.get(city) or get_city_tier(city)
         tcfg         = TIER_CONFIG[tier]
         min_prob     = tcfg["min_prob"]
         max_size_city = tcfg["max_size"]
@@ -568,6 +577,14 @@ def run_weather_scout(client, state: dict, equity: float) -> list[dict]:
         else:
             uncertainty = (2.0 if unit == "F" else 1.1) + buf
             prob = forecast_prob_for_bucket(members[0], buf_low, buf_high, is_gte, uncertainty)
+
+        # ── Overconfidence cap (90% ceiling) ───────────────────────────────
+        # When all 50 members agree (prob >= 90%), model has systematic bias.
+        # Empirically: Paris 100% → missed by +3.8°C; Wellington 98% → missed 2°C.
+        ENSEMBLE_CONFIDENCE_CAP = 0.90
+        if prob > ENSEMBLE_CONFIDENCE_CAP:
+            _log(f"  [CAP] {city} {prob:.0%} → capped at {ENSEMBLE_CONFIDENCE_CAP:.0%}", Fore.YELLOW)
+            prob = ENSEMBLE_CONFIDENCE_CAP
 
         # ── Model run freshness penalty ───────────────────────────────────────
         # ECMWF runs at 00:00 and 12:00 UTC. If >3h into a 12h window, apply -5pp.
