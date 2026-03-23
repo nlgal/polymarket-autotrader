@@ -103,6 +103,19 @@ def main():
         args    = OrderArgs(token_id=token_id, price=price, size=shares, side=BUY)
         options = PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk)
         signed  = client.create_order(args, options)
+
+        # Approve USDC allowance before placing (required for first trade)
+        try:
+            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+            client.update_balance_allowance(
+                params=BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                    signature_type=2
+                )
+            )
+        except Exception as ae:
+            print(f"  Allowance pre-approval: {ae}")
+
         receipt = client.post_order(signed, OrderType.GTC)
 
         if receipt.get("success"):
