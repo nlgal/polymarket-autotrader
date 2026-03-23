@@ -609,7 +609,7 @@ def run_weather_scout(client, state: dict, equity: float) -> list[dict]:
 
         # Edge: how mispriced is it?
         edge = prob - mid
-        if edge < 0.15:  # Need at least 15pp edge after uncertainty
+        if edge < 0.18:  # Need at least 18pp edge (15pp base + ~3pp fee buffer for weather markets)
             continue
 
         # ── Duplicate check ──────────────────────────────────────────────────

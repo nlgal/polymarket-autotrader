@@ -482,6 +482,7 @@ NEWS_SCAN_INTERVAL     = 5 * 60   # News arb check every 5 minutes
 NEWS_ARB_MIN_EDGE      = 0.12     # Higher bar for news arb trades (more confident)
 NEWS_ARB_SIZE_MULT     = 1.5      # Size up news arb trades vs normal
 MIN_EDGE              = 0.07
+MIN_EDGE_NET_FEE      = 0.09  # Net-of-fee minimum for fee-enabled markets (crypto/sports)
 MIN_CONFIDENCE        = "high"
 MARKETS_FETCH_LIMIT   = 200   # Total markets to pull per scan (by volume)
 TOP_MARKETS_TO_SCORE  = 30   # How many top-volume to score with AI
@@ -1120,6 +1121,7 @@ def normalize(raw):
             "end_date":     raw.get("endDate", ""),
             "description":  raw.get("description", "")[:500],
             "market_slug":  raw.get("slug", ""),
+            "fees_enabled": bool(raw.get("feesEnabled", False)),
         }
     except Exception:
         return None
@@ -1250,6 +1252,34 @@ def build_uw_context(market, uw_cache, action):
 
     text = ("UNUSUAL WHALES SMART MONEY DATA:\n" + "\n".join(lines) + "\n") if lines else ""
     return text, sig
+
+
+def compute_polymarket_fee(price: float, fee_rate: float = 0.25, exponent: float = 2.0) -> float:
+    """
+    Compute Polymarket taker fee as a fraction of trade value.
+    Formula: fee_fraction = fee_rate * (p * (1-p))^exponent
+    This gives the fee as a fraction of (price * shares), i.e. as a % of USDC spent.
+
+    For fee-enabled markets (crypto, NCAAB, Serie A):
+      fee_rate=0.25, exponent=2 for crypto
+      fee_rate=0.0175, exponent=1 for sports
+    For most markets: returns 0.0
+
+    The effective rate peaks at 1.56% at p=0.50 and decreases toward extremes.
+    At p=0.10: ~0.20% | p=0.25: ~0.88% | p=0.50: ~1.56% | p=0.75: ~0.88% | p=0.90: ~0.20%
+    """
+    p = max(0.01, min(0.99, price))
+    return fee_rate * (p * (1.0 - p)) ** exponent
+
+
+def is_fee_enabled_market(market: dict) -> bool:
+    """Check if this market has fees enabled (crypto, NCAAB, Serie A)."""
+    if market.get("fees_enabled", False):
+        return True
+    # Fallback: detect by question keywords
+    q = market.get("question", "").lower()
+    return any(kw in q for kw in ["bitcoin", "btc", "ethereum", "eth",
+                                    "15-minute", "ncaab", "serie a"])
 
 
 def score_market(market, mode="NORMAL"):
@@ -1498,7 +1528,20 @@ HARD PASS rules (return PASS immediately, no exceptions):
             result["confidence"] = "low"  # demote unknown confidence to low
         # ── End validation ─────────────────────────────────────────────────────
         result["edge"] = round(float(result["true_probability"]) - market["yes_price"], 4)
-        if abs(result["edge"]) <= MIN_EDGE or result["confidence"] != "high":
+        # ── Fee-aware edge threshold ────────────────────────────────────────────
+        # For fee-enabled markets (crypto, NCAAB, Serie A), apply the fee cost
+        # to the edge before deciding. Use a higher net-edge threshold.
+        _trade_price = market["yes_price"] if result.get("action") == "BUY_YES" else market.get("no_price", 0.5)
+        _fee_enabled = is_fee_enabled_market(market)
+        _fee_fraction = compute_polymarket_fee(_trade_price) if _fee_enabled else 0.0
+        _net_edge = abs(result["edge"]) - _fee_fraction
+        _min_edge_threshold = MIN_EDGE_NET_FEE if _fee_enabled else MIN_EDGE
+        result["_fee_fraction"] = round(_fee_fraction, 4)
+        result["_fee_enabled"]  = _fee_enabled
+        result["_net_edge"]     = round(_net_edge, 4)
+        if _fee_enabled and _fee_fraction > 0:
+            log(f"  [FEE] {market.get('question','')[:40]} fee={_fee_fraction:.3f} net_edge={_net_edge:+.3f}", Fore.YELLOW)
+        if _net_edge <= _min_edge_threshold or result["confidence"] != "high":
             result["action"] = "PASS"
         # Reject BUY_NO when no_price > 0.82 — collecting tiny premium on tail risk
         # e.g. NO at 83¢ yields only 17¢ upside with fat blow-up tail; not worth it
