@@ -102,6 +102,7 @@ ALLOWED_SCRIPTS = {
     "sell_btc_80k_no.py",
     "sell_btc_exact.py",
     "opportunity_scanner.py",
+    "deploy_btc_momentum.py",
 }
 
 
