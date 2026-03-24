@@ -1,8 +1,16 @@
-import subprocess, time
-r = subprocess.run(["systemctl", "restart", "btc-momentum"], capture_output=True, text=True)
-print(f"restart: {r.returncode} {r.stderr[:50]}")
-time.sleep(3)
-status = subprocess.run(["systemctl", "status", "btc-momentum", "--no-pager"],
-                        capture_output=True, text=True)
-for line in status.stdout.split("\n")[:8]:
-    if line.strip(): print(line)
+"""
+reset_state.py — Resets the autotrader state to NORMAL mode.
+Run this if the bot is stuck in PAUSED or has stale state.
+"""
+import os, json
+STATE_FILE = "/opt/polymarket-agent/state.json"
+if os.path.exists(STATE_FILE):
+    with open(STATE_FILE) as f:
+        state = json.load(f)
+    print("Before:", json.dumps({k: v for k, v in state.items() if k not in ["open_positions"]}, indent=2)[:400])
+    state["mode"] = "NORMAL"
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+    print("Reset: mode=NORMAL")
+else:
+    print("State file not found")
