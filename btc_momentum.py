@@ -270,6 +270,77 @@ def get_session_info():
         effective = MOMENTUM_THRESHOLD * DEAD_SESSION_THRESHOLD_MULT
         return False, name, effective
 
+def get_order_flow_delta(lookback_seconds=60):
+    """
+    Footprint approximation: calculates taker buy delta over the last N seconds.
+    Delta > 0 = aggressive buying (takers hitting ask) → bullish
+    Delta < 0 = aggressive selling (takers hitting bid) → bearish
+    
+    Uses Coinbase exchange public trades API (Binance fallback if available).
+    Returns (delta_btc: float, direction: str, confidence: float)
+    where confidence is |delta| / total_volume (0–1).
+    """
+    sources = [
+        # Coinbase: side="sell" means TAKER bought (maker sold)
+        # side="buy" means TAKER sold (maker bought) — Coinbase uses maker side convention
+        ("coinbase", "https://api.exchange.coinbase.com/products/BTC-USD/trades?limit=500",
+         lambda t: (float(t["size"]) if t.get("side") == "sell" else 0,  # taker buy
+                    float(t["size"]) if t.get("side") == "buy"  else 0,  # taker sell
+                    t.get("time",""))),
+        # Binance (from server): m=False means taker buy, m=True means taker sell
+        ("binance", "https://api.binance.com/api/v3/aggTrades?symbol=BTCUSDT&limit=500",
+         lambda t: (float(t["q"]) if not t.get("m") else 0,
+                    float(t["q"]) if t.get("m")     else 0,
+                    str(t.get("T",0)))),
+    ]
+
+    cutoff_time = time.time() - lookback_seconds
+
+    for source_name, url, extract_fn in sources:
+        try:
+            r = requests.get(url, timeout=5)
+            trades = r.json()
+            if not isinstance(trades, list) or not trades:
+                continue
+
+            taker_buy  = 0.0
+            taker_sell = 0.0
+            counted    = 0
+
+            for t in trades:
+                # Parse timestamp
+                try:
+                    ts_raw = extract_fn(t)[2]
+                    if isinstance(ts_raw, (int, float)):  # Binance: millisecond timestamp
+                        ts = float(ts_raw) / 1000
+                    else:  # Coinbase: ISO string
+                        from datetime import datetime as _dt
+                        ts = _dt.fromisoformat(ts_raw.replace("Z","+00:00")).timestamp()
+                    if ts < cutoff_time:
+                        continue
+                except:
+                    pass  # Include trade if we can't parse time
+
+                buy_vol, sell_vol, _ = extract_fn(t)
+                taker_buy  += buy_vol
+                taker_sell += sell_vol
+                counted    += 1
+
+            if counted < 5:
+                continue  # Not enough data
+
+            total      = taker_buy + taker_sell
+            delta      = taker_buy - taker_sell
+            confidence = abs(delta) / total if total > 0 else 0.0
+            direction  = "UP" if delta > 0 else "DOWN"
+
+            return delta, direction, confidence, source_name
+
+        except Exception as e:
+            continue  # Try next source
+
+    return 0.0, None, 0.0, None  # All sources failed — neutral
+
 def get_btc_move_pct(window_start):
     """Calculate BTC % move since window_start. Returns (pct_change, direction)."""
     start_price = get_btc_price(window_start)
@@ -688,19 +759,40 @@ def main():
                         move_pct, direction = get_btc_move_pct(window_start)
 
                         if move_pct >= effective_threshold and direction:
-                            if not is_active:
-                                logprint(f"  SIGNAL (dead session): BTC moved {move_pct*100:.3f}% → {direction} — threshold met ({effective_threshold*100:.3f}%)")
-                            else:
-                                logprint(f"  SIGNAL: BTC moved {move_pct*100:.3f}% → {direction}")
+                            # ── Order flow confirmation (footprint) ──────────────────
+                            # Require delta direction to ALIGN with price direction.
+                            # If BTC moved up but takers were net selling, skip — likely
+                            # a thin-market fake move with no follow-through.
+                            delta_btc, delta_dir, delta_conf, delta_src = get_order_flow_delta(lookback_seconds=60)
+                            delta_aligned = (delta_dir is None) or (delta_dir == direction)
 
-                            # Get market for this window
-                            market = get_current_market(window_start)
-                            if not market:
-                                logprint("  Market not found — skip", "WARN")
+                            if delta_dir is not None:
+                                logprint(f"  Delta ({delta_src}): {delta_btc:+.3f} BTC → {delta_dir} | conf={delta_conf:.2f} | aligned={delta_aligned}")
+
+                            # In dead sessions, require delta confirmation (no exceptions)
+                            # In active sessions, delta misalignment is a warning but not a block
+                            # (MMs sometimes absorb a big move before the delta catches up)
+                            if not is_active and not delta_aligned and delta_conf > 0.20:
+                                logprint(f"  SKIP: dead session + delta mismatch ({direction} price but {delta_dir} delta conf={delta_conf:.2f})")
+                                # Record the skip to learn from
+                                state.setdefault("skipped_signals", []).append({
+                                    "ts": time.time(), "price_dir": direction,
+                                    "delta_dir": delta_dir, "session": session_name
+                                })
                             else:
-                                # Choose token based on direction
-                                token_id = (market["up_token"] if direction == "UP"
-                                            else market["down_token"])
+                                if not is_active:
+                                    logprint(f"  SIGNAL (dead session): BTC moved {move_pct*100:.3f}% → {direction} — threshold met ({effective_threshold*100:.3f}%)")
+                                else:
+                                    logprint(f"  SIGNAL: BTC moved {move_pct*100:.3f}% → {direction} | delta={delta_btc:+.3f} BTC")
+
+                                # Get market for this window
+                                market = get_current_market(window_start)
+                                if not market:
+                                    logprint("  Market not found — skip", "WARN")
+                                else:
+                                    # Choose token based on direction
+                                    token_id = (market["up_token"] if direction == "UP"
+                                                else market["down_token"])
 
                                 if not token_id:
                                     logprint("  Token not found", "WARN")
@@ -750,10 +842,11 @@ def main():
                                             save_state(state)
 
                                             btc_now = get_btc_price()
+                                            delta_str = f" | Δ{delta_btc:+.2f}BTC ({delta_conf:.0%} conf)" if delta_dir else ""
                                             tg(f"📈 <b>BTC Bot: {direction}</b>\n"
                                                f"{position['shares']} shares @ {position['entry_price']:.2f}\n"
-                                               f"BTC move: {move_pct*100:.3f}% | BTC: ${btc_now:,.0f}\n"
-                                               f"Window: {datetime.fromtimestamp(window_start, tz=timezone.utc).strftime('%H:%M')} UTC")
+                                               f"Move: {move_pct*100:.3f}%{delta_str} | BTC: ${btc_now:,.0f}\n"
+                                               f"{session_name} | {datetime.fromtimestamp(window_start, tz=timezone.utc).strftime('%H:%M')} UTC")
                                         else:
                                             logprint(f"  Trade failed: {err}", "WARN")
 
