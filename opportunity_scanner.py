@@ -152,7 +152,7 @@ Rules:
         r = requests.post("https://api.anthropic.com/v1/messages",
             headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},
-            json={"model": "claude-3-5-haiku-20241022",
+            json={"model": "claude-haiku-4-5",
                   "max_tokens": 256,
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=20)
