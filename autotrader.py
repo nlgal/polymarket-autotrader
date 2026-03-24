@@ -2786,6 +2786,30 @@ def run_cycle(client, state):
             log(f"  SKIP (holding {held_side}, agent wants {want_side} — conflict): {m['question'][:50]}", Fore.YELLOW)
             continue
 
+        # ── Correlation guard: don't hold opposing bets on the SAME underlying event ──
+        # Example: "US forces enter Iran by April 30 YES" vs "US forces enter Iran by Dec 31 NO"
+        # These are correlated — if forces enter Iran, both positions lose/win together.
+        # Detect via shared key phrases in the question.
+        _corr_conflict = False
+        _q_words = set(q_lower.split())
+        for _held_q, _held_side in existing_side.items():
+            if _held_q == q_lower:
+                continue  # same question, already handled above
+            _held_words = set(_held_q.split())
+            # Overlap: questions sharing 4+ meaningful words are likely correlated
+            _shared = _q_words & _held_words - {"will","the","by","to","a","an","in",
+                                                "of","or","and","is","be","on","for",
+                                                "at","it","as","from","with","that",
+                                                "are","this","2026","2025","march",
+                                                "april","june","december","31","30"}
+            if len(_shared) >= 4 and _held_side != want_side:
+                log(f"  SKIP (correlated conflict: '{_held_q[:40]}' holds {_held_side}, "
+                    f"new wants {want_side}): {q_lower[:40]}", Fore.YELLOW)
+                _corr_conflict = True
+                break
+        if _corr_conflict:
+            continue
+
         # ── Sports policy gate ──────────────────────────────────────────────────
         if is_sports_market(m.get("question", "") + " " + m.get("title", "")):
             allowed, reason = check_sports_eligibility(m, state, equity_now)
