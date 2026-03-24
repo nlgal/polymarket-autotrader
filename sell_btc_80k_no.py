@@ -66,13 +66,15 @@ def main():
     print(f"{'='*55}")
 
     try:
-        # Approve conditional token allowance
-        try:
-            client.update_balance_allowance(
-                params=BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL,
-                                              token_id=TOKEN_ID, signature_type=2))
-        except Exception as ae:
-            print(f"  Allowance: {ae}")
+        # Approve both USDC collateral and conditional token allowance
+        for _at, _tid in [(AssetType.COLLATERAL, None), (AssetType.CONDITIONAL, TOKEN_ID)]:
+            try:
+                kwargs = {"asset_type": _at, "signature_type": 2}
+                if _tid: kwargs["token_id"] = _tid
+                client.update_balance_allowance(params=BalanceAllowanceParams(**kwargs))
+                print(f"  Allowance approved: {_at}")
+            except Exception as ae:
+                print(f"  Allowance {_at}: {ae}")
 
         tick     = client.get_tick_size(TOKEN_ID)
         neg_risk = client.get_neg_risk(TOKEN_ID)
