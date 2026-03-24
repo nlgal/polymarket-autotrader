@@ -122,9 +122,7 @@ def get_candidate_markets():
 def score_with_claude(question, yes_p, description, news_snippets):
     """Use Claude to score the edge given fresh news."""
     if not ANTHROPIC_KEY:
-        log(f"  [CLAUDE] No API key — skipping scoring")
         return "PASS", 0.0, "No API key"
-    log(f"  [CLAUDE] Scoring with key={ANTHROPIC_KEY[:12]}...")
     
     prompt = f"""You are a prediction market analyst. Score the following market and determine if there's a trading edge.
 
