@@ -2247,6 +2247,8 @@ def _execute_thesis_sell(client, token_id: str, shares: float, reason: str):
 def manage_positions(client):
     """
     Sell filled positions at profit target, stop loss, or near resolution.
+    Uses CLOB trade history + Polymarket /positions API to catch all positions
+    (including ones bought outside of this bot or in previous sessions).
     """
     try:
         trades = client.get_trades()
@@ -2271,6 +2273,42 @@ def manage_positions(client):
             positions[token_id]["cost"]   += size * price
         else:
             positions[token_id]["shares"] -= size
+
+    # ── Augment with Polymarket /positions API ────────────────────────────────
+    # The CLOB trade history is paged and may miss older or external trades.
+    # The /positions endpoint reflects the actual on-chain token balances.
+    try:
+        import requests as _pr
+        _pos_r = _pr.get(f"https://data-api.polymarket.com/positions?user={FUNDER}&limit=100",
+                         timeout=10)
+        if _pos_r.status_code == 200:
+            for _p in _pos_r.json():
+                _asset = _p.get("asset", "")
+                _outcome = _p.get("outcome", "NO")
+                _size = float(_p.get("size", 0))
+                _avg_price = float(_p.get("avgPrice") or _p.get("averagePrice") or 0)
+                if not _asset or _size < 0.1:
+                    continue
+                if _asset not in positions:
+                    # Position exists on-chain but not in CLOB trade history — add it
+                    # Use side="BUY" always: we hold the token (YES or NO) and profit_target
+                    # check is: current_price >= PROFIT_TARGET (token price appreciation)
+                    _fallback_entry = _avg_price if _avg_price > 0 else 0.50
+                    positions[_asset] = {"side": "BUY", "shares": _size, "cost": _size * _fallback_entry}
+                    log(f"  [POSITIONS API] Added {_asset[:16]}... {_size:.2f} {_outcome} shares @ entry {_fallback_entry:.3f}", Fore.CYAN)
+                elif abs(positions[_asset]["shares"] - _size) > 1.0:
+                    # Significant discrepancy — trust the on-chain balance
+                    _old = positions[_asset]["shares"]
+                    positions[_asset]["shares"] = _size
+                    # Also correct cost and side using positions API data
+                    # curPrice from positions API is the actual token price (not YES inverse)
+                    # Use side="BUY" + avgPrice for correct profit check direction
+                    if _avg_price > 0:
+                        positions[_asset]["cost"] = _size * _avg_price
+                        positions[_asset]["side"] = "BUY"  # profit check: current >= PROFIT_TARGET
+                    log(f"  [POSITIONS API] Corrected {_asset[:16]}... shares {_old:.2f} → {_size:.2f}, side=BUY, entry={_avg_price:.3f}", Fore.CYAN)
+    except Exception as _pe:
+        log(f"  positions API augmentation failed: {_pe}", Fore.YELLOW)
 
     for token_id, pos in positions.items():
         shares = pos["shares"]
