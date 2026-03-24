@@ -562,6 +562,26 @@ def main():
         logprint("ERROR: POLYMARKET_PRIVATE_KEY not set", "ERR")
         sys.exit(1)
 
+    # ── Pre-flight checks ──────────────────────────────────────────
+    try:
+        _pf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "preflight.py")
+        import importlib.util as _ilu
+        _pf_spec = _ilu.spec_from_file_location("preflight", _pf_path)
+        _pf_mod  = _ilu.module_from_spec(_pf_spec)
+        _pf_spec.loader.exec_module(_pf_mod)
+        _ok, _results = _pf_mod.run_preflight(
+            bot_name="BTC Momentum",
+            send_telegram=True,
+            skip_tests={"T6"}  # weather_scout not needed for this bot
+        )
+        if not _ok:
+            logprint("Pre-flight FAILED — will attempt to continue with caution", "WARN")
+    except FileNotFoundError:
+        logprint("preflight.py not found — skipping checks", "WARN")
+    except Exception as _pfe:
+        logprint(f"Pre-flight error (non-fatal): {_pfe}", "WARN")
+    # ────────────────────────────────────────────────
+
     # Start BTC price feed
     start_price_feed()
     time.sleep(3)  # Let WebSocket connect

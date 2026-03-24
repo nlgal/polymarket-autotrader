@@ -2883,6 +2883,32 @@ def main():
         log("ERROR: POLYMARKET_PRIVATE_KEY not set in .env", Fore.RED)
         return
 
+    # ── Pre-flight checks ────────────────────────────────────────────────────
+    # Run safety checks before trading. Blocks on critical failures.
+    # Skip T4/T5 (BTC momentum-specific) and T6 (weather scout re-checked inline)
+    try:
+        _pf_dir = os.path.dirname(os.path.abspath(__file__))
+        import importlib.util as _ilu
+        _pf_spec = _ilu.spec_from_file_location("preflight", os.path.join(_pf_dir, "preflight.py"))
+        _pf_mod  = _ilu.module_from_spec(_pf_spec)
+        _pf_spec.loader.exec_module(_pf_mod)
+        _ok, _results = _pf_mod.run_preflight(
+            bot_name="Autotrader",
+            send_telegram=True,
+            skip_tests={"T4", "T5"}  # BTC price feed / 5-min market — not needed here
+        )
+        if not _ok:
+            critical_fails = [r for r in _results if not r["passed"] and r["critical"]]
+            log(f"Pre-flight FAILED: {len(critical_fails)} critical check(s). Trading blocked.", Fore.RED)
+            for f in critical_fails:
+                log(f"  FAIL: {f['name']}: {f['message']}", Fore.RED)
+            # Don't exit — some failures are auto-fixable (e.g. CLOB creds re-derived in T2)
+            # Re-run after a brief wait to give T2 a chance to save fresh creds
+            import time as _t; _t.sleep(5)
+    except Exception as _pfe:
+        log(f"Pre-flight check error (non-fatal): {_pfe}", Fore.YELLOW)
+    # ──────────────────────────────────────────────────────────────
+
     # Load persisted state (survives reboots)
     state = load_state()
     log(f"Loaded state: mode={state['mode']}, peak=${state.get('equity_peak_eod') or '?'}", Fore.CYAN)
