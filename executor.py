@@ -101,6 +101,7 @@ ALLOWED_SCRIPTS = {
     "diagnose_allowance.py",
     "sell_btc_80k_no.py",
     "sell_btc_exact.py",
+    "opportunity_scanner.py",
 }
 
 
