@@ -100,6 +100,7 @@ ALLOWED_SCRIPTS = {
     "approve_and_sell_btc.py",
     "diagnose_allowance.py",
     "sell_btc_80k_no.py",
+    "sell_btc_exact.py",
 }
 
 
@@ -207,15 +208,17 @@ class ExecutorHandler(BaseHTTPRequestHandler):
                 self.send_json(403, {"error": f"script not in allowlist: {script}"})
                 return
             script_path = os.path.join(AGENT_DIR, script)
-            # Download if not present
-            if not os.path.exists(script_path):
-                dl = run_command(
-                    f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/{script} "
-                    f"-o {script_path}"
-                )
-                if dl["exit_code"] != 0:
+            # Always re-download from GitHub to get latest version
+            dl = run_command(
+                f"curl -sf https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/{script} "
+                f"-o {script_path}"
+            )
+            if dl["exit_code"] != 0:
+                # If download fails but file exists, use cached version
+                if not os.path.exists(script_path):
                     self.send_json(500, {"error": f"failed to download {script}", **dl})
                     return
+                log.warning(f"Download failed for {script}, using cached version")
             result = run_command(f"{VENV_PYTHON} {script_path}", timeout=120)
             log.info(f"Script {script} exit={result['exit_code']}")
             self.send_json(200, result)
