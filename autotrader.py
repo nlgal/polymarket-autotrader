@@ -870,6 +870,43 @@ def ensure_allowances(state):
         else:
             log("All USDC allowances already set.", Fore.WHITE)
 
+        # ── Approve conditional token allowances for all open positions ────────────
+        # This is required to SELL position tokens back to the market.
+        # Without this, sells fail with 'not enough balance / allowance'.
+        # The CLOB client handles this via update_balance_allowance(CONDITIONAL, token_id).
+        try:
+            pos_resp = requests.get(
+                f"https://data-api.polymarket.com/positions?user={FUNDER}&limit=25",
+                timeout=10
+            )
+            if pos_resp.status_code == 200:
+                from py_clob_client.clob_types import BalanceAllowanceParams as _BAP, AssetType as _AT
+                # Need a CLOB client to call update_balance_allowance
+                # Build one from env
+                from py_clob_client.client import ClobClient as _CC
+                from py_clob_client.clob_types import ApiCreds as _AC
+                _pk = os.environ.get("POLYMARKET_PRIVATE_KEY", "").strip()
+                _fu = os.environ.get("POLYMARKET_FUNDER_ADDRESS", "").strip()
+                _st = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "2"))
+                _cl = _CC("https://clob.polymarket.com", key=_pk, chain_id=137,
+                          creds=_AC(api_key=os.environ.get("CLOB_API_KEY",""),
+                                    api_secret=os.environ.get("CLOB_API_SECRET",""),
+                                    api_passphrase=os.environ.get("CLOB_API_PASSPHRASE","")),
+                          signature_type=_st, funder=_fu)
+                for _p in pos_resp.json():
+                    _tok = _p.get("asset", "")
+                    _val = float(_p.get("currentValue", 0) or 0)
+                    if _tok and _val > 1.0:
+                        try:
+                            _cl.update_balance_allowance(
+                                params=_BAP(asset_type=_AT.CONDITIONAL,
+                                            token_id=_tok, signature_type=2))
+                            log(f"  ✓ Conditional token approved: {_tok[:16]}...", Fore.WHITE)
+                        except Exception as _te:
+                            log(f"  Conditional token {_tok[:16]}: {_te}", Fore.YELLOW)
+        except Exception as _ce:
+            log(f"Conditional token approvals: {_ce}", Fore.YELLOW)
+
     except ImportError as e:
         log(f"web3 import error — {e}", Fore.YELLOW)
     except Exception as e:
