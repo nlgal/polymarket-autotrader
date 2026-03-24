@@ -958,11 +958,23 @@ def get_client():
 
 def get_equity(client):
     """
-    Equity = USDC cash balance only.
-    Position values are not included because get_trades() returns all historical
-    trades and cannot be reliably netted. The cash balance is the ground truth
-    for how much is available to trade.
+    Equity = total portfolio value (USDC cash + all open position values).
+    Uses Polymarket data-api /value endpoint which returns the true portfolio value.
+    Falls back to USDC cash only if that fails.
     """
+    try:
+        import requests as _req
+        # Use Polymarket data API for true total value (includes position mark-to-market)
+        _r = _req.get(f"https://data-api.polymarket.com/value?user={FUNDER}", timeout=8)
+        if _r.status_code == 200:
+            _data = _r.json()
+            if isinstance(_data, list) and _data:
+                return float(_data[0].get("value", 0))
+            elif isinstance(_data, dict):
+                return float(_data.get("value", 0))
+    except Exception as e:
+        log(f"Equity value API failed: {e} — falling back to USDC balance", Fore.YELLOW)
+    # Fallback: USDC cash only
     try:
         from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
         balance_info = client.get_balance_allowance(
@@ -2312,7 +2324,8 @@ def manage_positions(client):
             except Exception:
                 pl_data = {}
             if gain_pct >= PROFIT_LOCK_GAIN and token_id not in pl_data:
-                half_shares = round(shares / 2, 2)
+                import math as _math2
+                half_shares = _math2.floor(shares / 2 * 100) / 100  # floor to 2dp
                 log(f"[PROFIT-LOCK] NO position +{gain_pct*100:.0f}% gain — selling half ({half_shares} shares)", Fore.GREEN)
                 tg(f"🔒 <b>Profit-lock: selling half</b>\nNO gain {gain_pct*100:.0f}% (entry {no_entry:.3f} → now {no_current:.3f})\nSelling {half_shares} of {shares:.0f} shares to lock gain")
                 try:
@@ -2353,69 +2366,47 @@ def manage_positions(client):
                 tick_dec = len(str(tick).rstrip("0").split(".")[-1]) if "." in str(tick) else 0
                 sell_price = round(round(current_price / tick_f) * tick_f, tick_dec)
                 sell_price = max(0.01, min(0.99, sell_price))
-                args    = OrderArgs(token_id=token_id, price=sell_price, size=round(shares, 2), side=SELL)
+                # CRITICAL: Use CLOB-reported balance (floor to 2dp) — never round up
+                # round(337.238879, 2) = 337.24 which EXCEEDS 337.238879 → 400 error
+                import math as _math
+                _clob_bal = shares
+                try:
+                    from py_clob_client.clob_types import BalanceAllowanceParams as _BAP2, AssetType as _AT2
+                    _bal_resp = client.get_balance_allowance(params=_BAP2(
+                        asset_type=_AT2.CONDITIONAL, token_id=token_id, signature_type=2))
+                    _raw = int(_bal_resp.get("balance", 0))
+                    if _raw > 0:
+                        _clob_bal = _raw / 1e6
+                        log(f"  CLOB balance: {_clob_bal:.6f} shares", Fore.WHITE)
+                except Exception as _be:
+                    log(f"  Balance check: {_be} — using trade-calc", Fore.YELLOW)
+                sell_size = _math.floor(_clob_bal * 100) / 100  # floor to 2dp, never exceed balance
+                if sell_size < 0.01:
+                    log(f"  Sell size {sell_size} too small — skipping (token may be expired)", Fore.YELLOW)
+                    continue
+                args    = OrderArgs(token_id=token_id, price=sell_price, size=sell_size, side=SELL)
                 options = PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk)
                 signed  = client.create_order(args, options)
                 receipt = client.post_order(signed, OrderType.GTC)
                 if receipt.get("success"):
-                    pnl = (sell_price - avg_entry) * shares
-                    log(f"✓ SOLD {shares:.2f} shares @ ${sell_price:.3f} | PnL: ${pnl:+.2f} | {reason}", Fore.GREEN)
-                    tg(f"💰 <b>SOLD</b> {shares:.1f} shares @ ${sell_price:.3f}\nP&L: ${pnl:+.2f} | {reason[:80]}")
+                    pnl = (sell_price - avg_entry) * sell_size
+                    log(f"✓ SOLD {sell_size:.2f} shares @ ${sell_price:.3f} | PnL: ${pnl:+.2f} | {reason}", Fore.GREEN)
+                    tg(f"💰 <b>SOLD</b> {sell_size:.1f} shares @ ${sell_price:.3f}\nP&L: ${pnl:+.2f} | {reason[:80]}")
                 else:
                     err_msg = receipt.get('errorMsg', '')
                     if "not enough balance" in err_msg or "allowance" in err_msg:
-                        # Set conditional token allowance then retry once
-                        log(f"  Setting conditional token allowance for sell, retrying...", Fore.YELLOW)
-                        try:
-                            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
-                            client.update_balance_allowance(
-                                params=BalanceAllowanceParams(
-                                    asset_type=AssetType.CONDITIONAL,
-                                    token_id=token_id,
-                                    signature_type=2
-                                )
-                            )
-                            signed2 = client.create_order(args, options)
-                            receipt2 = client.post_order(signed2, OrderType.GTC)
-                            if receipt2.get("success"):
-                                pnl = (sell_price - avg_entry) * shares
-                                log(f"✓ SOLD {shares:.2f} shares @ ${sell_price:.3f} | PnL: ${pnl:+.2f} | {reason}", Fore.GREEN)
-                                tg(f"💰 <b>SOLD</b> {shares:.1f} shares @ ${sell_price:.3f}\nP&L: ${pnl:+.2f} | {reason[:80]}")
-                            else:
-                                log(f"Sell failed after allowance fix: {receipt2.get('errorMsg')}", Fore.RED)
-                        except Exception as e2:
-                            log(f"Sell allowance retry failed: {e2}", Fore.RED)
+                        log(f"  Balance/allowance error — token may have expired or already sold. Skipping.", Fore.YELLOW)
                     else:
                         log(f"Sell order failed: {err_msg}", Fore.RED)
             except Exception as e:
                 err = str(e)
                 if "not enough balance" in err or "allowance" in err:
-                    # Set conditional token allowance then retry once
-                    log(f"  Setting conditional token allowance for sell, retrying...", Fore.YELLOW)
-                    try:
-                        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
-                        client.update_balance_allowance(
-                            params=BalanceAllowanceParams(
-                                asset_type=AssetType.CONDITIONAL,
-                                token_id=token_id,
-                                signature_type=2
-                            )
-                        )
-                        from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
-                        args2   = OrderArgs(token_id=token_id, price=sell_price, size=round(shares, 2), side=SELL)
-                        signed2 = client.create_order(args2, options)
-                        receipt2 = client.post_order(signed2, OrderType.GTC)
-                        if receipt2.get("success"):
-                            pnl = (sell_price - avg_entry) * shares
-                            log(f"✓ SOLD {shares:.2f} shares @ ${sell_price:.3f} | PnL: ${pnl:+.2f} | {reason}", Fore.GREEN)
-                            tg(f"💰 <b>SOLD</b> {shares:.1f} shares @ ${sell_price:.3f}\nP&L: ${pnl:+.2f} | {reason[:80]}")
-                        else:
-                            log(f"Sell failed after allowance fix: {receipt2.get('errorMsg')}", Fore.RED)
-                    except Exception as e2:
-                        log(f"Sell allowance retry failed: {e2}", Fore.RED)
+                    # Balance error on exception path — token likely expired/resolved
+                    log(f"  Balance/allowance error (exception): {err[:100]}", Fore.YELLOW)
+                    log(f"  Token {token_id[:20]}... may be expired or already sold — skipping.", Fore.YELLOW)
                 else:
                     log(f"Sell failed: {e}", Fore.RED)
-                    log_mistake("Sell failed", f"token {token_id[:20]}", str(e)[:150], "Set conditional token allowance at buy time")
+                    log_mistake("Sell failed", f"token {token_id[:20]}", str(e)[:150], "Check CLOB balance before sell")
 
 
 # ── News Arbitrage Layer ─────────────────────────────────────────────────────
@@ -2724,10 +2715,18 @@ def run_cycle(client, state):
     except Exception:
         pass
 
-    # Check available balance
-    available = max(0, equity_now - stats["deployed"] - MIN_FREE_BALANCE)
+    # Check available balance (use USDC cash only for new trade sizing)
+    # equity_now includes position values but we can only spend USDC cash
+    try:
+        from py_clob_client.clob_types import BalanceAllowanceParams as _BAP3, AssetType as _AT3
+        _usdc_info = client.get_balance_allowance(
+            params=_BAP3(asset_type=_AT3.COLLATERAL, signature_type=2))
+        _usdc_cash = float(_usdc_info.get("balance", 0)) / 1e6
+    except Exception:
+        _usdc_cash = equity_now  # fallback
+    available = max(0, _usdc_cash - stats["deployed"] - MIN_FREE_BALANCE)
     if available < SIZE_MIN[mode]:
-        log(f"Insufficient free balance (${available:.2f}) — skipping new trades.", Fore.YELLOW)
+        log(f"Insufficient free balance (${available:.2f} USDC cash) — skipping new trades.", Fore.YELLOW)
         save_state(state)
         return state
 
