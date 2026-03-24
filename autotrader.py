@@ -527,6 +527,14 @@ MARKET_BLACKLIST_KEYWORDS = [
     # In-play / game-day markets — always blocked regardless of sports policy
     "o/u ", "over/under", "spread", "anytime goalscorer",
     "win on 2026-", "win on 2025-",   # game-day win markets
+    # Token launch / FDV markets — NEVER trade these.
+    # Lesson: Backpack FDV $200M NO cost $122. Token launched at $2B FDV,
+    # market showed 46¢ with ghost order book (bids 0.001/asks 0.999).
+    # These markets resolve instantly on launch day with no real order flow.
+    "fdv above", "fdv below", "fdv over", "fdv under",
+    "fully diluted valuation", "tge", "token generation event",
+    "day after launch", "on launch day", "market cap on launch",
+    "price on launch", "token price",
 ]  # Social/noise blacklist — sports handled separately by is_sports_market()
 
 # Sports keyword detector — used to route markets through sports policy checks

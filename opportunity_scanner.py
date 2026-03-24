@@ -93,8 +93,17 @@ def get_candidate_markets():
             continue
         
         q = m.get("question","")
+        q_lower = q.lower()
         # Skip in-play sports (spread/totals), tweet counts
-        if any(x in q.lower() for x in ["spread:", "o/u", "tweets", "post from", "how many times"]):
+        if any(x in q_lower for x in ["spread:", "o/u", "tweets", "post from", "how many times"]):
+            continue
+        # Skip token launches, FDV markets, TGE markets — these resolve before
+        # any real order book forms and prices are stale/fake.
+        # Lesson: Backpack FDV $200M NO cost $122 because the token launched at
+        # $2B FDV but the market showed 46¢ YES with ghost order book depth.
+        if any(x in q_lower for x in ["fdv", "tge", "token launch", "token generation",
+                                       "fully diluted", "market cap on launch",
+                                       "price on launch", "day after launch"]):
             continue
         # Skip same-day game results (already resolving)
         end = m.get("endDate","")
@@ -202,22 +211,48 @@ def get_clob_price(token_id):
     except:
         return 0
 
-def has_real_liquidity(token_id, side="YES", min_depth=1000):
-    """Check if the order book has real depth at reasonable prices."""
+def has_real_liquidity(token_id, side="YES", min_depth=2000):
+    """
+    Check if the order book has REAL depth at tradeable prices.
+    Ghost order books (bids at 0.001, asks at 0.999) pass the gamma API
+    liquidity check but are untradeable.
+    
+    Requirements:
+    1. At least 3 orders in the 10¢–90¢ price range (not just extreme walls)
+    2. Total depth >= min_depth USDC in that range
+    3. Bid-ask spread in the tradeable zone < 30¢ (not a 0.001/0.999 ghost book)
+    
+    Lesson: Backpack FDV NO had $36k 'liquidity' on gamma but bids only at
+    0.001–0.05 and asks only at 0.95–0.999. Nothing tradeable in the middle.
+    """
     try:
         r = requests.get(f"https://clob.polymarket.com/book?token_id={token_id}", timeout=5)
         book = r.json()
+        bids = book.get("bids", [])
+        asks = book.get("asks", [])
+        
+        # Filter to the tradeable zone (10¢–90¢)
+        real_bids = [b for b in bids if 0.10 <= float(b["price"]) <= 0.90]
+        real_asks = [a for a in asks if 0.10 <= float(a["price"]) <= 0.90]
+        
+        # Must have orders on BOTH sides in the tradeable zone
+        if len(real_bids) < 2 or len(real_asks) < 2:
+            return False
+        
+        # Spread between best bid and best ask in tradeable zone must be reasonable
+        best_bid = max(float(b["price"]) for b in real_bids)
+        best_ask = min(float(a["price"]) for a in real_asks)
+        spread = best_ask - best_bid
+        if spread > 0.30:  # >30¢ spread = no real market maker activity
+            return False
+        
+        # Total depth check
         if side == "YES":
-            # For BUY YES: check asks (people selling YES tokens we'd buy)
-            asks = book.get("asks", [])
-            depth_at_reasonable = sum(float(a["size"]) * float(a["price"])
-                for a in asks if float(a["price"]) < 0.98)
+            depth = sum(float(a["size"]) * float(a["price"]) for a in real_asks)
         else:
-            # For BUY NO: check bids on the NO token or asks on the YES token
-            asks = book.get("asks", [])
-            depth_at_reasonable = sum(float(a["size"]) * float(a["price"])
-                for a in asks if 0.03 < float(a["price"]) < 0.97)
-        return depth_at_reasonable >= min_depth
+            depth = sum(float(b["size"]) * float(b["price"]) for b in real_bids)
+        
+        return depth >= min_depth
     except:
         return False
 
