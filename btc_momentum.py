@@ -48,6 +48,22 @@ MAX_HOURLY_TRADES  = 12      # Rate limit per hour (increased — cooldown remov
 CONSECUTIVE_LOSS_THRESHOLD = 3  # After N consecutive losses, analyze and adapt
 WINDOW_SECONDS     = 300     # 5 minutes
 
+# ── Session Filter (UTC hours) ───────────────────────────────────────
+# Only trade during active market sessions. BTC momentum strategy requires
+# directional moves > THRESHOLD. Dead sessions = coin flips with spread loss.
+#
+# Active windows (UTC):
+#   07:00–16:00  London session + Asia/London overlap
+#   12:00–21:00  US session + London/US overlap  (peak: 13:00-17:00 UTC)
+# Combined: 07:00–21:00 UTC = 14 hours of real momentum
+# Dead zone:  21:00–07:00 UTC = skip, save capital for good setups
+#
+# Raise DEAD_SESSION_THRESHOLD during dead hours — require stronger signal
+# (don't fully stop: sudden macro events like FOMC can create big moves any time)
+ACTIVE_HOURS_START  = 7    # UTC hour — London open
+ACTIVE_HOURS_END    = 21   # UTC hour — after US close
+DEAD_SESSION_THRESHOLD_MULT = 2.0  # dead hours: require 2x the normal threshold
+
 LOG_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "btc_momentum.log")
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "btc_momentum_state.json")
 
@@ -220,6 +236,39 @@ def get_btc_price(window_start=None):
         if not candidates:
             return None
         return min(candidates, key=lambda x: x[0])[1]
+
+def get_session_info():
+    """
+    Returns (is_active: bool, session_name: str, effective_threshold: float).
+    Active sessions use the normal threshold.
+    Dead sessions double the threshold to only trade on genuinely large moves
+    (e.g. FOMC surprise, flash crash) while skipping the coin-flip noise.
+    """
+    hour_utc = datetime.now(timezone.utc).hour
+    
+    if ACTIVE_HOURS_START <= hour_utc < ACTIVE_HOURS_END:
+        # Identify which session
+        if 7 <= hour_utc < 9:
+            name = "Asia/London overlap"
+        elif 9 <= hour_utc < 12:
+            name = "London"
+        elif 12 <= hour_utc < 13:
+            name = "London/US overlap starting"
+        elif 13 <= hour_utc < 17:
+            name = "London/US overlap PEAK"
+        elif 17 <= hour_utc < 21:
+            name = "US session"
+        else:
+            name = "active"
+        return True, name, MOMENTUM_THRESHOLD
+    else:
+        # Dead zone — still trade but require much stronger signal
+        if 21 <= hour_utc or hour_utc < 4:
+            name = "dead zone (US close/overnight)"
+        else:
+            name = "Asia pre-open"
+        effective = MOMENTUM_THRESHOLD * DEAD_SESSION_THRESHOLD_MULT
+        return False, name, effective
 
 def get_btc_move_pct(window_start):
     """Calculate BTC % move since window_start. Returns (pct_change, direction)."""
@@ -589,7 +638,11 @@ def main():
     state = load_state()
     last_window = 0
 
-    tg(f"🤖 <b>BTC Momentum Bot Started</b>\nThreshold: {MOMENTUM_THRESHOLD*100:.2f}% | ${TRADE_SIZE_USDC}/trade\nWatching 5-min BTC Up/Down markets")
+    is_active_now, session_now, _ = get_session_info()
+    tg(f"🤖 <b>BTC Momentum Bot Started</b>\n"
+       f"Threshold: {MOMENTUM_THRESHOLD*100:.2f}% (active) / {MOMENTUM_THRESHOLD*DEAD_SESSION_THRESHOLD_MULT*100:.2f}% (dead)\n"
+       f"Size: ${TRADE_SIZE_USDC} | TP: {TAKE_PROFIT_PRICE}\n"
+       f"Session: {session_now} | Active hours: {ACTIVE_HOURS_START:02d}:00–{ACTIVE_HOURS_END:02d}:00 UTC")
 
     while True:
         try:
@@ -621,11 +674,24 @@ def main():
                         if time_in_window == ENTRY_WINDOW_START:  # Only log once
                             logprint(f"  Skip: {reason}")
                     else:
+                        # Session filter: use effective threshold based on market session
+                        is_active, session_name, effective_threshold = get_session_info()
+
+                        # Log session info once per new window
+                        if time_in_window <= ENTRY_WINDOW_START + 2:
+                            if is_active:
+                                logprint(f"  Session: {session_name} | threshold={effective_threshold*100:.3f}%")
+                            else:
+                                logprint(f"  Session: {session_name} | threshold raised to {effective_threshold*100:.3f}% (dead mkt)")
+
                         # Calculate momentum signal
                         move_pct, direction = get_btc_move_pct(window_start)
 
-                        if move_pct >= MOMENTUM_THRESHOLD and direction:
-                            logprint(f"  SIGNAL: BTC moved {move_pct*100:.3f}% → {direction}")
+                        if move_pct >= effective_threshold and direction:
+                            if not is_active:
+                                logprint(f"  SIGNAL (dead session): BTC moved {move_pct*100:.3f}% → {direction} — threshold met ({effective_threshold*100:.3f}%)")
+                            else:
+                                logprint(f"  SIGNAL: BTC moved {move_pct*100:.3f}% → {direction}")
 
                             # Get market for this window
                             market = get_current_market(window_start)
