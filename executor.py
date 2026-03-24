@@ -103,6 +103,7 @@ ALLOWED_SCRIPTS = {
     "sell_btc_exact.py",
     "opportunity_scanner.py",
     "deploy_btc_momentum.py",
+    "exit_contradictions.py",
 }
 
 
