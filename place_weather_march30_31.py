@@ -1,24 +1,29 @@
-"""Bootstrap: update executor + run exit_contradictions.py"""
-import subprocess, requests, os, time, sys
+"""Clean executor restart - download latest, kill hanging processes, restart."""
+import subprocess, requests, time, os
 
 AGENT_DIR = "/opt/polymarket-agent"
-VENV_PY   = f"{AGENT_DIR}/venv/bin/python3"
 
-# 1. Update executor with new allowlist
+print("=== Clean Executor Restart ===")
+
+# Kill any hanging Python processes on port 8888
+kill = subprocess.run(["fuser", "-k", "8888/tcp"], capture_output=True, text=True)
+print(f"Killed port 8888: {kill.returncode}")
+time.sleep(2)
+
+# Download latest executor
 r = requests.get("https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/executor.py", timeout=15)
 with open(f"{AGENT_DIR}/executor.py", "w") as f: f.write(r.text)
-print(f"Executor updated ({len(r.text)} chars), exit_contradictions in allowlist: {'exit_contradictions' in r.text}")
-subprocess.run(["systemctl", "restart", "executor"], capture_output=True)
+print(f"Downloaded executor ({len(r.text)} chars)")
+print(f"  hormuz_rebalance in allowlist: {'hormuz_rebalance' in r.text}")
+print(f"  exit_contradictions in allowlist: {'exit_contradictions' in r.text}")
+
+# Restart executor service
+subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
+result = subprocess.run(["systemctl", "restart", "executor"], capture_output=True, text=True)
+print(f"Restart: {result.returncode} {result.stderr[:50]}")
 time.sleep(3)
 
-# 2. Download and run exit_contradictions.py
-r2 = requests.get("https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/exit_contradictions.py", timeout=15)
-with open(f"{AGENT_DIR}/exit_contradictions.py", "w") as f: f.write(r2.text)
-print(f"exit_contradictions.py downloaded ({len(r2.text)} chars)")
-
-result = subprocess.run([VENV_PY, f"{AGENT_DIR}/exit_contradictions.py"], 
-                        capture_output=True, text=True, timeout=120)
-print("EXIT CODE:", result.returncode)
-print("STDOUT:", result.stdout[-2000:])
-if result.stderr:
-    print("STDERR:", result.stderr[-500:])
+status = subprocess.run(["systemctl", "status", "executor", "--no-pager"], capture_output=True, text=True)
+for l in status.stdout.split("\n")[:6]:
+    if l.strip(): print(l)
+print("Done")
