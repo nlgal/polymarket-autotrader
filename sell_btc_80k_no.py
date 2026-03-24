@@ -1,14 +1,14 @@
 """
-sell_btc_80k_no.py — Sell BTC $80,000 NO position (comprehensive v4)
+sell_btc_80k_no.py — Sell BTC $80,000 NO position (v5 - FIXED)
 
-Fixes "not enough balance / allowance" 400 error by:
-1. Re-deriving fresh API creds every time
-2. Querying exact balance from CLOB (not hardcoded)
-3. For SELL orders: size = shares (not USDC)
-4. Trying multiple price levels if first attempt fails (bid, mid, mid-0.01)
-5. Saving fresh creds to .env so autotrader uses them too
+ROOT CAUSE of "not enough balance / allowance":
+  Hardcoded SHARES = 337.24 but actual balance = 337.238879 shares.
+  The CLOB rounds size DOWN to 2 decimals → 337.23 needed (not 337.24).
+  337.24 → 337240000 units > 337238879 actual balance → REJECTED.
+
+Fix: query exact balance from CLOB, then floor to 2 decimal places.
 """
-import os, sys, re, json, requests
+import os, sys, re, json, math, requests
 from dotenv import load_dotenv
 
 _env = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -27,20 +27,19 @@ from py_clob_client.clob_types import (ApiCreds, OrderArgs, OrderType,
     PartialCreateOrderOptions, BalanceAllowanceParams, AssetType)
 from py_clob_client.order_builder.constants import SELL
 
-HOST  = "https://clob.polymarket.com"
-CHAIN = 137
-TOKEN_ID    = "96839284769036407740491691016901048240322264125970194871307313464800669089139"
-ENTRY_PRICE = 0.5656
+HOST     = "https://clob.polymarket.com"
+CHAIN    = 137
+TOKEN_ID = "96839284769036407740491691016901048240322264125970194871307313464800669089139"
+ENTRY    = 0.5656
 
 def tg(msg):
     if TG_TOKEN and TG_CHAT:
         try:
             requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
                 json={"chat_id": TG_CHAT, "text": msg, "parse_mode": "HTML"}, timeout=10)
-        except Exception: pass
+        except: pass
 
 def save_creds(creds):
-    """Persist fresh CLOB creds to .env"""
     with open(_env) as f:
         env = f.read()
     for key, val in [("CLOB_API_KEY", creds.api_key),
@@ -52,156 +51,136 @@ def save_creds(creds):
             env += f"\n{key}={val}"
     with open(_env, "w") as f:
         f.write(env)
-    print(f"  ✓ Saved fresh creds to .env (key: {creds.api_key[:20]}...)")
+
+def floor2(x):
+    """Floor to 2 decimal places (same as CLOB's round_down with size=2)"""
+    return math.floor(x * 100) / 100
 
 def main():
-    # Step 1: Create client and ALWAYS re-derive creds
     print("=" * 60)
-    print("  BTC $80k NO — SELL (v4)")
+    print("  BTC $80k NO — SELL v5 (exact balance fix)")
     print("=" * 60)
-    
+
+    # Always re-derive creds
     client = ClobClient(HOST, key=PRIVATE_KEY, chain_id=CHAIN,
                         signature_type=SIG_TYPE, funder=FUNDER)
-    
-    print("\n[1] Deriving fresh CLOB API credentials...")
+    print("\n[1] Deriving fresh CLOB API creds...")
     try:
         creds = client.create_or_derive_api_creds()
         client.set_api_creds(creds)
         save_creds(creds)
+        print(f"  OK: {creds.api_key[:20]}...")
     except Exception as e:
-        print(f"  Warning: cred derivation failed: {e}")
-        # Fall back to env creds
-        creds = ApiCreds(api_key=os.environ.get("CLOB_API_KEY",""),
-                         api_secret=os.environ.get("CLOB_API_SECRET",""),
-                         api_passphrase=os.environ.get("CLOB_API_PASSPHRASE",""))
-        client.set_api_creds(creds)
+        print(f"  Warning: {e}")
+        env_creds = ApiCreds(
+            api_key=os.environ.get("CLOB_API_KEY",""),
+            api_secret=os.environ.get("CLOB_API_SECRET",""),
+            api_passphrase=os.environ.get("CLOB_API_PASSPHRASE",""))
+        client.set_api_creds(env_creds)
 
-    # Step 2: Get exact balance from CLOB
-    print("\n[2] Querying exact balance from CLOB...")
+    # Get exact balance from CLOB
+    print("\n[2] Getting exact balance from CLOB...")
     try:
         bal = client.get_balance_allowance(params=BalanceAllowanceParams(
-            asset_type=AssetType.CONDITIONAL, token_id=TOKEN_ID, signature_type=SIG_TYPE))
-        print(f"  Balance response: {bal}")
-        raw = int(bal.get("balance", 0))
-        # CLOB balance is in units of 1e6
-        exact_shares = raw / 1e6
-        print(f"  Raw: {raw} → {exact_shares:.6f} shares")
+            asset_type=AssetType.CONDITIONAL, token_id=TOKEN_ID,
+            signature_type=SIG_TYPE))
+        print(f"  Raw response: {bal}")
+        raw_units = int(bal.get("balance", 0))
+        exact_shares = raw_units / 1e6
+        # CLOB internally does round_down(size, 2) so floor to 2dp
+        safe_shares = floor2(exact_shares)
+        print(f"  Raw units: {raw_units}")
+        print(f"  Exact shares: {exact_shares:.6f}")
+        print(f"  Safe size (floor to 2dp): {safe_shares}")
     except Exception as e:
-        print(f"  Warning: balance query failed: {e} — using 337.24")
-        exact_shares = 337.24
+        print(f"  Balance query failed: {e}")
+        exact_shares = 337.238879
+        safe_shares = floor2(exact_shares)  # = 337.23
+        print(f"  Fallback: {safe_shares}")
 
-    if exact_shares < 1:
-        print(f"\n  ERROR: Only {exact_shares} shares found. Position may already be sold or CLOB out of sync.")
-        tg(f"⚠️ <b>BTC sell aborted</b>: only {exact_shares:.4f} shares in CLOB. Already sold?")
+    if safe_shares < 1:
+        print(f"\n  ERROR: safe_shares={safe_shares} — position may already be closed")
+        tg(f"⚠️ BTC sell: only {safe_shares} shares. Already sold?")
         return
 
-    # Step 3: Update allowances
+    # Update allowances
     print("\n[3] Updating allowances...")
-    for asset_type, kwargs in [
-        (AssetType.COLLATERAL, {"asset_type": AssetType.COLLATERAL, "signature_type": SIG_TYPE}),
-        (AssetType.CONDITIONAL, {"asset_type": AssetType.CONDITIONAL, "token_id": TOKEN_ID, "signature_type": SIG_TYPE}),
-    ]:
-        try:
-            r = client.update_balance_allowance(params=BalanceAllowanceParams(**kwargs))
-            print(f"  ✓ {asset_type}: {r}")
-        except Exception as e:
-            print(f"  {asset_type}: {e}")
+    try:
+        client.update_balance_allowance(params=BalanceAllowanceParams(
+            asset_type=AssetType.COLLATERAL, signature_type=SIG_TYPE))
+        print("  COLLATERAL: OK")
+    except Exception as e:
+        print(f"  COLLATERAL: {e}")
+    try:
+        client.update_balance_allowance(params=BalanceAllowanceParams(
+            asset_type=AssetType.CONDITIONAL, token_id=TOKEN_ID,
+            signature_type=SIG_TYPE))
+        print("  CONDITIONAL: OK")
+    except Exception as e:
+        print(f"  CONDITIONAL: {e}")
 
-    # Step 4: Get market data
+    # Get market data
     print("\n[4] Getting market data...")
     r = requests.get(f"{HOST}/midpoint?token_id={TOKEN_ID}", timeout=8)
     mid = float(r.json().get("mid", 0.89)) if r.status_code == 200 else 0.89
-    
-    # Also get the order book to find best bid
-    try:
-        ob_r = requests.get(f"{HOST}/book?token_id={TOKEN_ID}", timeout=8)
-        ob = ob_r.json()
-        bids = ob.get("bids", [])
-        best_bid = float(bids[0]["price"]) if bids else mid - 0.01
-        print(f"  Mid: {mid:.4f} | Best bid: {best_bid:.4f}")
-    except:
-        best_bid = mid - 0.01
-        print(f"  Mid: {mid:.4f} (couldn't get order book)")
 
     tick     = client.get_tick_size(TOKEN_ID)
     neg_risk = client.get_neg_risk(TOKEN_ID)
     tick_f   = float(tick)
     tick_dec = len(str(tick).rstrip("0").split(".")[-1]) if "." in str(tick) else 0
+    sell_price = round(round(mid / tick_f) * tick_f, tick_dec)
+    sell_price = max(0.01, min(0.99, sell_price))
+
+    pnl = (mid - ENTRY) * safe_shares
+    print(f"  Mid: {mid:.4f} | Sell price: {sell_price:.4f}")
+    print(f"  Shares: {safe_shares} | P&L: ${pnl:+.2f}")
     print(f"  tick={tick} neg_risk={neg_risk}")
 
-    # Step 5: Try to sell at multiple price levels
-    print("\n[5] Attempting sell orders...")
-    
-    pnl = (mid - ENTRY_PRICE) * exact_shares
-    pnl_pct = (mid - ENTRY_PRICE) / ENTRY_PRICE * 100
-    print(f"  Entry: {ENTRY_PRICE:.4f} | Current: {mid:.4f} | P&L: ${pnl:+.2f} ({pnl_pct:+.1f}%)")
-    
-    # Try sizes: exact (6dp), truncated to 4dp, truncated to 2dp, minus a tiny bit
-    # Polymarket CLOB needs size in shares (not USDC) for conditional tokens
-    size_candidates = [
-        round(exact_shares, 6),
-        round(exact_shares, 4),
-        round(exact_shares, 2),
-        round(exact_shares - 0.01, 2),
-    ]
-    # Remove duplicates while preserving order
-    seen = set()
-    sizes = []
-    for s in size_candidates:
-        if s > 0 and s not in seen:
-            seen.add(s)
-            sizes.append(s)
+    # Place sell order
+    print("\n[5] Placing sell order...")
+    args = OrderArgs(token_id=TOKEN_ID, price=sell_price, size=safe_shares, side=SELL)
+    opts = PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk)
 
-    # Try price levels: mid (rounded to tick), mid-1tick, best_bid
-    price_candidates = []
-    for base in [mid, mid - tick_f, best_bid]:
-        p = round(round(base / tick_f) * tick_f, tick_dec)
-        p = max(0.01, min(0.99, p))
-        if p not in price_candidates:
-            price_candidates.append(p)
+    try:
+        signed  = client.create_order(args, opts)
+        receipt = client.post_order(signed, OrderType.GTC)
+        print(f"  Receipt: {json.dumps(receipt, indent=2)}")
 
-    for price in price_candidates:
-        for size in sizes:
-            print(f"\n  Trying: {size} shares @ {price:.4f}...")
-            try:
-                args   = OrderArgs(token_id=TOKEN_ID, price=price, size=size, side=SELL)
-                opts   = PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk)
-                signed = client.create_order(args, opts)
-                receipt = client.post_order(signed, OrderType.GTC)
-                
-                print(f"  Receipt: {json.dumps(receipt, indent=2)}")
-                
-                if receipt.get("success"):
-                    proceeds = price * size
-                    profit   = proceeds - ENTRY_PRICE * size
-                    print(f"\n  ✅ SOLD {size} @ {price:.4f}")
-                    print(f"  ✅ Proceeds: ${proceeds:.2f} | Profit: ${profit:+.2f}")
-                    tg(f"💰 <b>BTC $80k NO — SOLD ✅</b>\n{size} shares @ {price:.4f}\n"
-                       f"Proceeds: ${proceeds:.2f} | Profit: ${profit:+.2f}\n"
-                       f"Locked in gain before BTC rally risk")
-                    return  # SUCCESS — done
+        if receipt.get("success"):
+            proceeds = sell_price * safe_shares
+            profit   = proceeds - ENTRY * safe_shares
+            print(f"\n  ✅ SOLD {safe_shares} @ {sell_price:.4f}")
+            print(f"  ✅ Proceeds: ${proceeds:.2f} | Profit: ${profit:+.2f}")
+            tg(f"💰 <b>BTC $80k NO — SOLD ✅</b>\n"
+               f"{safe_shares} shares @ {sell_price:.4f}\n"
+               f"Proceeds: ${proceeds:.2f} | Profit: ${profit:+.2f}")
+        else:
+            err = receipt.get("errorMsg", str(receipt))
+            print(f"\n  ✗ Failed: {err}")
+
+            # Last resort: try 1 share less
+            if "balance" in err.lower() or "allowance" in err.lower():
+                fallback_size = floor2(safe_shares - 0.01)
+                print(f"\n  Retrying with {fallback_size} shares...")
+                args2   = OrderArgs(token_id=TOKEN_ID, price=sell_price,
+                                    size=fallback_size, side=SELL)
+                signed2 = client.create_order(args2, opts)
+                r2      = client.post_order(signed2, OrderType.GTC)
+                print(f"  Retry receipt: {json.dumps(r2, indent=2)}")
+                if r2.get("success"):
+                    p = sell_price * fallback_size
+                    pr = p - ENTRY * fallback_size
+                    print(f"  ✅ SOLD {fallback_size} @ {sell_price:.4f} | ${p:.2f} | ${pr:+.2f}")
+                    tg(f"💰 <b>BTC $80k NO SOLD (fallback)</b>\n"
+                       f"{fallback_size} @ {sell_price:.4f} | Profit: ${pr:+.2f}")
                 else:
-                    err = receipt.get("errorMsg", str(receipt))
-                    print(f"  ✗ Failed: {err}")
-                    if "not enough balance" not in err.lower() and "allowance" not in err.lower():
-                        # Different error — stop trying this price
-                        break
-            except Exception as e:
-                print(f"  ✗ Exception: {e}")
-                import traceback; traceback.print_exc()
+                    print(f"  ✗ Retry also failed: {r2.get('errorMsg','')}")
+                    tg(f"⚠️ BTC sell all attempts failed.\nBot will handle it automatically on next cycle.")
+    except Exception as e:
+        print(f"\n  ✗ Exception: {e}")
+        import traceback; traceback.print_exc()
 
-    # All attempts failed
-    print("\n" + "=" * 60)
-    print("  All sell attempts failed.")
-    print("  The bot's manage_positions() should handle this automatically")
-    print("  since current price (0.895) > PROFIT_TARGET (0.80).")
-    print("  It will sell on the next trading cycle if CLOB creds are valid.")
-    print("=" * 60)
-    
-    tg(f"⚠️ <b>BTC $80k NO sell failed</b>\n"
-       f"All {len(price_candidates)*len(sizes)} attempts returned 'not enough balance'.\n"
-       f"Bot will attempt automatic sell on next cycle.\n"
-       f"Balance: {exact_shares:.4f} shares | Mid: {mid:.4f}")
+    print("\nDone")
 
 if __name__ == "__main__":
     main()
