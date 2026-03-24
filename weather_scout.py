@@ -33,6 +33,40 @@ WEATHER_MIN_LIQUIDITY   = 500.0   # Min market liquidity to trade
 WEATHER_MAX_MID         = 0.35    # Don't buy above 35¢ (asymmetric bet only)
 WEATHER_MIN_CONFIDENCE  = 0.50    # Forecast must assign ≥50% prob to this bucket
 WEATHER_MIN_HOURS_LEFT  = 6.0     # Market must have ≥6h before close
+
+# ── Ensemble collapse guard (March 23 lesson) ─────────────────────────────────
+# When all ensemble members agree (std < threshold), they share a systematic bias.
+# Add extra buffer to account for unresolved model error.
+WEATHER_ENSEMBLE_COLLAPSE_STD = 0.5   # °C — below this, ensemble is "collapsed"
+WEATHER_COLLAPSE_BUFFER       = 1.0   # °C extra buffer to add when collapsed
+
+# ── City reliability tiers ────────────────────────────────────────────────────
+# TIER A: Reliable interiors, low convective uncertainty (dense obs network)
+# TIER B: Semi-coastal or seasonal uncertainty (moderate buffer needed)
+# TIER C: Coastal/tropical cities — high convective uncertainty
+TIER_CONFIG = {
+    "A": {"min_prob": 0.70, "max_size": 20.0, "extra_buffer_c": 0.0},
+    "B": {"min_prob": 0.75, "max_size": 15.0, "extra_buffer_c": 1.0},
+    "C": {"min_prob": 0.80, "max_size": 10.0, "extra_buffer_c": 2.0},
+}
+
+# City tier assignments
+_CITY_TIER_MAP = {
+    # Tier A — reliable interiors
+    "Chicago": "A", "New York City": "A", "Los Angeles": "A",
+    "Berlin": "A", "Moscow": "A", "Toronto": "A", "Denver": "A",
+    # Tier B — semi-coastal / seasonal
+    "Paris": "B", "Beijing": "B", "Milan": "B", "Istanbul": "B",
+    "London": "B", "Tokyo": "B", "Seoul": "B", "Amsterdam": "B",
+    # Tier C — coastal/tropical high uncertainty
+    "Buenos Aires": "C", "Singapore": "C", "Mumbai": "C",
+    "São Paulo": "C", "Sao Paulo": "C", "Lagos": "C", "Jakarta": "C",
+}
+
+def get_city_tier(city: str) -> str:
+    """Return reliability tier for a city (A/B/C). Default B if unknown."""
+    return _CITY_TIER_MAP.get(city, "B")
+
 WEATHER_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "intelligence", "weather_trades.json")
 
