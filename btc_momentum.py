@@ -43,8 +43,9 @@ TAKE_PROFIT_PRICE  = 0.85    # Exit if position reaches 85¢ (lock in ~35-40% ga
 MAX_ENTRY_PRICE    = 0.72    # Don't buy above 72¢ (not enough upside)
 MIN_ENTRY_PRICE    = 0.52    # Don't buy below 52¢ (signal not priced yet)
 TRADE_SIZE_USDC    = 40      # USDC per trade (conservative start)
-MAX_DAILY_LOSS     = 300     # Stop trading if down $300 on the day
-MAX_HOURLY_TRADES  = 8       # Rate limit: 8 trades per hour
+MAX_DAILY_LOSS     = 300     # Trigger loss analysis (not a blind stop) if down $300/day
+MAX_HOURLY_TRADES  = 12      # Rate limit per hour (increased — cooldown removed)
+CONSECUTIVE_LOSS_THRESHOLD = 3  # After N consecutive losses, analyze and adapt
 WINDOW_SECONDS     = 300     # 5 minutes
 
 LOG_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "btc_momentum.log")
@@ -404,6 +405,11 @@ def check_and_exit_positions(state):
                     state["total_pnl"] = state.get("total_pnl", 0) + pnl
                     if pnl > 0: state["wins"] = state.get("wins", 0) + 1
                     else: state["losses"] = state.get("losses", 0) + 1
+                    # Update pnl in recent_trade_log for analysis
+                    for trade in state.get("recent_trade_log", []):
+                        if trade.get("win_key") == win_str and trade.get("pnl") is None:
+                            trade["pnl"] = pnl
+                            break
                     to_close.append(win_str)
             except Exception as e:
                 logprint(f"  Exit error: {e}", "WARN")
@@ -414,23 +420,117 @@ def check_and_exit_positions(state):
     return state
 
 # ── Rate Limit Checks ──────────────────────────────────────────────────────────
+def analyze_and_adapt(state, reason):
+    """
+    Called after consecutive losses or daily loss limit.
+    Diagnoses WHY we're losing and adjusts parameters instead of just stopping.
+    
+    Loss patterns and fixes:
+      1. Signal fires late (market already priced in) → raise MOMENTUM_THRESHOLD
+      2. Reversals after entry (momentum fades) → tighten ENTRY_WINDOW_END
+      3. Consistent wrong direction → increase MIN_ENTRY_PRICE (wait for stronger confirmation)
+      4. Time-of-day pattern (low liquidity hours) → log the hours and skip them next time
+    """
+    global MOMENTUM_THRESHOLD, ENTRY_WINDOW_END, MIN_ENTRY_PRICE, TRADE_SIZE_USDC
+
+    recent_losses = state.get("recent_trade_log", [])
+    loss_count = len([t for t in recent_losses if t.get("pnl", 0) < 0])
+    win_count  = len([t for t in recent_losses if t.get("pnl", 0) >= 0])
+    total      = loss_count + win_count
+    win_rate   = win_count / total if total > 0 else 0.5
+
+    # Analyze entry prices of losing trades
+    losing_entries = [t.get("entry_price", 0.6) for t in recent_losses if t.get("pnl", 0) < 0]
+    avg_loss_entry = sum(losing_entries) / len(losing_entries) if losing_entries else 0.60
+
+    # Analyze move magnitude at entry for losses
+    losing_moves = [t.get("move_pct", MOMENTUM_THRESHOLD) for t in recent_losses if t.get("pnl", 0) < 0]
+    avg_loss_move = sum(losing_moves) / len(losing_moves) if losing_moves else MOMENTUM_THRESHOLD
+
+    old_threshold = MOMENTUM_THRESHOLD
+    old_entry_end = ENTRY_WINDOW_END
+    old_min_price = MIN_ENTRY_PRICE
+    old_size      = TRADE_SIZE_USDC
+    adaptations   = []
+
+    # Fix 1: If losing entries are near our entry threshold, signal is too weak → raise threshold
+    if avg_loss_move < MOMENTUM_THRESHOLD * 1.3:
+        MOMENTUM_THRESHOLD = min(0.0030, MOMENTUM_THRESHOLD * 1.25)
+        adaptations.append(f"threshold {old_threshold*100:.3f}% → {MOMENTUM_THRESHOLD*100:.3f}%")
+
+    # Fix 2: If losses happen with high entry prices (market already priced in) → lower MAX_ENTRY_PRICE
+    if avg_loss_entry > 0.68:
+        MIN_ENTRY_PRICE = min(0.58, MIN_ENTRY_PRICE + 0.03)
+        adaptations.append(f"min_entry_price → {MIN_ENTRY_PRICE:.2f} (avoiding late entries)")
+
+    # Fix 3: If win rate very low, tighten entry window (only enter in first 60s, not 90s)
+    if win_rate < 0.35 and total >= 4:
+        ENTRY_WINDOW_END = max(60, ENTRY_WINDOW_END - 10)
+        adaptations.append(f"entry_window_end {old_entry_end}s → {ENTRY_WINDOW_END}s")
+
+    # Fix 4: If we're taking too many losses, reduce size to preserve capital
+    if win_rate < 0.40 and total >= 6:
+        TRADE_SIZE_USDC = max(20, TRADE_SIZE_USDC * 0.75)
+        adaptations.append(f"trade_size ${old_size:.0f} → ${TRADE_SIZE_USDC:.0f}")
+    elif win_rate > 0.60 and total >= 6:
+        # Winning → scale up
+        TRADE_SIZE_USDC = min(100, TRADE_SIZE_USDC * 1.2)
+        adaptations.append(f"trade_size ${old_size:.0f} → ${TRADE_SIZE_USDC:.0f} (scaling up on wins)")
+
+    summary = (
+        f"\u26a0️ <b>BTC Bot: Loss Analysis</b>\n"
+        f"Trigger: {reason}\n"
+        f"Win rate: {win_rate*100:.0f}% ({win_count}W / {loss_count}L of last {total})\n"
+        f"Avg loss entry: {avg_loss_entry:.2f} | Avg move at entry: {avg_loss_move*100:.3f}%\n"
+    )
+    if adaptations:
+        summary += f"\n<b>Auto-adjustments:</b>\n" + "\n".join(f"  • {a}" for a in adaptations)
+        summary += "\n\nTrading continues with new parameters."
+    else:
+        summary += "\nParameters unchanged. Continuing."
+
+    logprint(f"LOSS ANALYSIS: {reason} | win_rate={win_rate:.0%} | adaptations={adaptations}")
+    tg(summary)
+    state["last_analysis"] = time.time()
+    state["analysis_win_rate"] = win_rate
+    return state
+
 def can_trade(state):
-    """Check daily loss and hourly trade rate limits."""
+    """Check limits and trigger analysis on loss patterns — never blindly stop."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if state.get("daily_date") != today:
-        state["daily_pnl"]   = 0.0
-        state["daily_date"]  = today
+        state["daily_pnl"]    = 0.0
+        state["daily_date"]   = today
         state["hourly_trades"] = []
+        state["recent_trade_log"] = []  # Reset daily log
 
-    if state.get("daily_pnl", 0) <= -MAX_DAILY_LOSS:
-        return False, f"Daily loss limit hit (${state['daily_pnl']:.0f})"
+    daily_pnl = state.get("daily_pnl", 0)
+    if daily_pnl <= -MAX_DAILY_LOSS:
+        # Don't stop — analyze and adapt, then continue
+        last_analysis = state.get("last_analysis", 0)
+        if time.time() - last_analysis > 1800:  # Only analyze every 30 min
+            state = analyze_and_adapt(state, f"Daily loss ${daily_pnl:.0f}")
+        # After analysis, continue trading with adjusted params
+        # Only stop if we've lost 2x the limit (truly broken day)
+        if daily_pnl <= -MAX_DAILY_LOSS * 2:
+            return False, f"Hard stop: daily loss ${daily_pnl:.0f} (2x limit)", state
 
-    # Hourly rate limit
+    # Check consecutive losses — analyze but don't stop
+    recent = state.get("recent_trade_log", [])
+    if len(recent) >= CONSECUTIVE_LOSS_THRESHOLD:
+        last_n = recent[-CONSECUTIVE_LOSS_THRESHOLD:]
+        if all(t.get("pnl", 0) < 0 for t in last_n):
+            last_analysis = state.get("last_analysis", 0)
+            if time.time() - last_analysis > 600:  # Only analyze every 10 min
+                state = analyze_and_adapt(state,
+                    f"{CONSECUTIVE_LOSS_THRESHOLD} consecutive losses")
+
+    # Hourly rate limit (soft — just ensures we're not spamming)
     now = time.time()
     cutoff = now - 3600
     state["hourly_trades"] = [t for t in state.get("hourly_trades",[]) if t > cutoff]
     if len(state["hourly_trades"]) >= MAX_HOURLY_TRADES:
-        return False, f"Hourly trade limit ({MAX_HOURLY_TRADES}/hr)"
+        return False, f"Hourly rate limit ({MAX_HOURLY_TRADES}/hr)", state
 
     # Check USDC balance
     try:
@@ -445,11 +545,11 @@ def can_trade(state):
             asset_type=AssetType.COLLATERAL, signature_type=2))
         usdc = float(bal.get("balance",0)) / 1e6
         if usdc < TRADE_SIZE_USDC:
-            return False, f"Insufficient USDC (${usdc:.2f})"
+            return False, f"Insufficient USDC (${usdc:.2f})", state
     except Exception as e:
-        return False, f"Balance check failed: {e}"
+        return False, f"Balance check failed: {e}", state
 
-    return True, "OK"
+    return True, "OK", state
 
 # ── Main Loop ─────────────────────────────────────────────────────────────────
 def main():
@@ -495,8 +595,8 @@ def main():
                 win_key = str(window_start)
                 if win_key not in state.get("open_positions", {}):
 
-                    # Check rate limits
-                    ok, reason = can_trade(state)
+                    # Check rate limits (returns state with any adaptations applied)
+                    ok, reason, state = can_trade(state)
                     if not ok:
                         if time_in_window == ENTRY_WINDOW_START:  # Only log once
                             logprint(f"  Skip: {reason}")
@@ -546,8 +646,21 @@ def main():
 
                                         if success and position:
                                             position["window_start"] = window_start
+                                            position["move_pct"] = move_pct  # store for analysis
                                             state.setdefault("open_positions", {})[win_key] = position
                                             state.setdefault("hourly_trades", []).append(time.time())
+                                            # Log to recent_trade_log for analysis
+                                            # (pnl is filled in when position resolves)
+                                            state.setdefault("recent_trade_log", []).append({
+                                                "ts": time.time(),
+                                                "direction": direction,
+                                                "entry_price": position.get("entry_price", 0),
+                                                "move_pct": move_pct,
+                                                "win_key": win_key,
+                                                "pnl": None  # filled in at close
+                                            })
+                                            # Keep only last 50 trades
+                                            state["recent_trade_log"] = state["recent_trade_log"][-50:]
                                             save_state(state)
 
                                             btc_now = get_btc_price()
