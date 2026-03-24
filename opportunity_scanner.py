@@ -149,22 +149,28 @@ Rules:
 - For sports/games with no clear favorite signal, PASS."""
     
     try:
-        r = requests.post("https://api.anthropic.com/v1/messages",
+        resp = requests.post("https://api.anthropic.com/v1/messages",
             headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},
             json={"model": "claude-haiku-4-5",
-                  "max_tokens": 256,
+                  "max_tokens": 300,
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=20)
-        content = r.json().get("content", [{}])[0].get("text","")
-        # Extract JSON
-        match = re.search(r'\{.*?\}', content, re.DOTALL)
+        resp_data = resp.json()
+        if resp.status_code != 200:
+            err = resp_data.get("error",{}).get("message","API error")[:60]
+            return "PASS", 0, f"API {resp.status_code}: {err}"
+        content = resp_data.get("content", [{}])[0].get("text","")
+        # Extract JSON — handle both raw JSON and ```json blocks
+        match = re.search(r'\{[^{}]*"action"[^{}]*\}', content, re.DOTALL)
+        if not match:
+            match = re.search(r'\{.*?\}', content, re.DOTALL)
         if match:
             result = json.loads(match.group())
-            return result.get("action","PASS"), result.get("edge",0), result.get("reasoning","")
-        return "PASS", 0, content[:100]
+            return result.get("action","PASS"), float(result.get("edge",0)), result.get("reasoning","")
+        return "PASS", 0, f"no json: {content[:80]}"
     except Exception as e:
-        return "PASS", 0, str(e)[:80]
+        return "PASS", 0, f"err: {str(e)[:60]}"
 
 def fetch_news_snippets(question):
     """Fetch relevant RSS headlines for the market question."""
