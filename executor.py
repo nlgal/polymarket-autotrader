@@ -96,6 +96,7 @@ ALLOWED_SCRIPTS = {
     "place_weather_march28_29.py",
     "place_weather_march30_31.py",
     "reset_state.py",
+    "sell_btc_80k_no.py",
 }
 
 
