@@ -2,14 +2,14 @@
 opportunity_scanner.py
 ======================
 Autonomous opportunity scanner — runs every 2 hours via cron.
-Scans Polymarket for mispriced markets using fresh news research,
-places trades directly when edge > threshold, sends Telegram summary.
+Scans Polymarket for mispriced markets using news + UW whale/insider signals.
+Places trades directly when edge > threshold, sends Telegram summary.
 
 Strategy:
 - Pulls top 50 markets by liquidity/volume
-- Skips markets we're already in or recently traded
-- For each candidate: fetches recent news via RSS/search, scores edge
-- Places BUY_NO or BUY_YES directly via CLOB when edge >= MIN_SCAN_EDGE
+- Augments with UW whale/unusual/insider signals from Unusual Whales API
+- For each candidate: fetches news, UW signal, scores edge with Claude
+- Places BUY_NO or BUY_YES when edge >= threshold (lower if UW insider flag)
 - Reports to Telegram regardless (good or no-trade)
 
 Runs on server via executor. Uses same .env as autotrader.
@@ -25,11 +25,14 @@ FUNDER      = os.environ.get("POLYMARKET_FUNDER_ADDRESS","").strip()
 TG_TOKEN    = os.environ.get("TELEGRAM_TOKEN","").strip()
 TG_CHAT     = os.environ.get("TELEGRAM_CHAT_ID","").strip()
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY","").strip()
+UW_API_KEY    = os.environ.get("UW_API_KEY","").strip()
+UW_BASE       = "https://api.unusualwhales.com"
 
 MIN_SCAN_EDGE    = 0.12   # Higher bar than autotrader's 0.07 — only obvious mispricings
 MIN_LIQUIDITY    = 50000  # $50k minimum liquidity
 MAX_TRADE_SIZE   = 150    # Max USDC per trade
 MIN_TRADE_SIZE   = 50
+UW_EDGE_DISCOUNT = 0.20   # Lower edge threshold by 20% when UW insider/whale signal present
 ALREADY_IN_FILE  = "/opt/polymarket-agent/intelligence/existing_positions.json"
 SCAN_LOG         = "/opt/polymarket-agent/opportunity_scan.log"
 
@@ -60,6 +63,105 @@ def get_usdc_balance():
     bal = client.get_balance_allowance(params=BalanceAllowanceParams(
         asset_type=AssetType.COLLATERAL, signature_type=2))
     return float(bal.get("balance", 0)) / 1e6, client
+
+# ── Unusual Whales Prediction Market Signal ─────────────────────────────────────
+
+def get_uw_signals():
+    """
+    Fetch unusual + whale signals from Unusual Whales prediction market endpoints.
+    Returns dict keyed by asset_id (CLOB token ID).
+    """
+    if not UW_API_KEY:
+        return {}
+    headers = {"Authorization": f"Bearer {UW_API_KEY}", "Accept": "application/json"}
+    signals = {}
+
+    # Unusual prediction markets (insider_trades, contrarian_whales tags)
+    try:
+        r = requests.get(f"{UW_BASE}/api/predictions/unusual", headers=headers, timeout=10)
+        if r.status_code == 200:
+            for item in r.json().get("data", {}).get("data", []):
+                asset_id = item.get("asset_id", "")
+                if not asset_id:
+                    continue
+                tags = [t.get("tag", "") for t in item.get("tags", [])]
+                signals[asset_id] = {
+                    "source": "unusual",
+                    "tags": tags,
+                    "smart_volume": float(item.get("smart_volume", 0)),
+                    "outcome": item.get("outcome", "Yes"),
+                    "current_price": float(item.get("current", 0) or 0),
+                    "market": item.get("market", ""),
+                }
+    except Exception as e:
+        log(f"[UW] Unusual fetch error: {e}")
+
+    # Whale positions ($50k+ smart money)
+    try:
+        r = requests.get(f"{UW_BASE}/api/predictions/whales", headers=headers, timeout=10)
+        if r.status_code == 200:
+            for item in r.json().get("data", {}).get("data", []):
+                asset_id = item.get("asset_id", "")
+                if not asset_id:
+                    continue
+                invested = float(item.get("invested_usd", 0))
+                if invested < 50000:
+                    continue
+                existing = signals.get(asset_id, {})
+                signals[asset_id] = {
+                    **existing,
+                    "source": existing.get("source", "whale"),
+                    "tags": list(set(existing.get("tags", []) + ["whale_position"])),
+                    "whale_invested": invested,
+                    "whale_amount": float(item.get("amount", 0)),
+                    "outcome": item.get("outcome", existing.get("outcome", "Yes")),
+                    "avg_price": float(item.get("avg_price", 0) or 0),
+                    "current_price": float(item.get("current_price", existing.get("current_price", 0)) or 0),
+                    "market": item.get("market", existing.get("market", "")),
+                }
+    except Exception as e:
+        log(f"[UW] Whale fetch error: {e}")
+
+    log(f"[UW] Loaded {len(signals)} signal(s) from Unusual Whales")
+    return signals
+
+
+def get_uw_signal_for_market(market, uw_signals):
+    """Match market tokens against UW signals. Returns (signal or None, action_hint or None)."""
+    tokens = market.get("clob_token_ids", [])
+    for token in tokens:
+        if token in uw_signals:
+            sig = uw_signals[token]
+            outcome = sig.get("outcome", "Yes").lower()
+            is_yes_token = (token == tokens[0]) if len(tokens) > 1 else True
+            if is_yes_token:
+                action_hint = "BUY_YES" if "yes" in outcome else "BUY_NO"
+            else:
+                action_hint = "BUY_NO" if "yes" in outcome else "BUY_YES"
+            return sig, action_hint
+    return None, None
+
+
+def uw_signal_summary(sig):
+    """Format UW signal for Claude prompt injection."""
+    if not sig:
+        return ""
+    parts = []
+    whale_inv = sig.get("whale_invested", 0)
+    smart_vol = sig.get("smart_volume", 0)
+    tags = sig.get("tags", [])
+    if whale_inv > 0:
+        parts.append(f"Whale position: ${whale_inv:,.0f} invested at avg {sig.get('avg_price', 0):.3f}")
+    if smart_vol > 0:
+        parts.append(f"Smart money volume: ${smart_vol:,.0f}")
+    if "insider_trades" in tags:
+        parts.append("⚠️ INSIDER TRADES flagged by Unusual Whales")
+    if "contrarian_whales" in tags:
+        parts.append("⚠️ CONTRARIAN WHALES flagged by Unusual Whales")
+    if "momentum" in tags:
+        parts.append("Momentum signal active")
+    return "\n".join(parts) if parts else ""
+
 
 def get_existing_positions():
     """Get markets we already have positions in."""
@@ -128,11 +230,12 @@ def get_candidate_markets():
     
     return sorted(candidates, key=lambda x: x["volume24h"], reverse=True)[:25]
 
-def score_with_claude(question, yes_p, description, news_snippets):
+def score_with_claude(question, yes_p, description, news_snippets, uw_summary=""):
     """Use Claude to score the edge given fresh news."""
     if not ANTHROPIC_KEY:
         return "PASS", 0.0, "No API key"
     
+    uw_section = f"\nUNUSUAL WHALES SIGNAL:\n{uw_summary}" if uw_summary else ""
     prompt = f"""You are a prediction market analyst. Score the following market and determine if there's a trading edge.
 
 MARKET: {question}
@@ -140,7 +243,7 @@ CURRENT YES PRICE: {yes_p:.2f} (implies {yes_p*100:.0f}% probability)
 DESCRIPTION: {description}
 
 RECENT NEWS CONTEXT:
-{news_snippets}
+{news_snippets}{uw_section}
 
 Respond with ONLY a JSON object like this:
 {{
@@ -155,6 +258,7 @@ Rules:
 - edge = abs(true_probability - yes_p) — only flag if > 0.12
 - action = BUY_YES if true_prob > yes_p + 0.12, BUY_NO if true_prob < yes_p - 0.12, else PASS
 - Be conservative. Only flag genuine mispricings backed by news.
+- If Unusual Whales flags INSIDER TRADES or CONTRARIAN WHALES, treat as strong signal.
 - For sports/games with no clear favorite signal, PASS."""
     
     try:
@@ -312,6 +416,9 @@ def main():
         log(f"Insufficient cash (${usdc:.2f}) — skipping scan")
         return
     
+    # Load UW whale/insider signals
+    uw_signals = get_uw_signals()
+    
     # Get existing positions
     existing_conditions = get_existing_positions()
     log(f"Existing positions: {len(existing_conditions)}")
@@ -332,14 +439,32 @@ def main():
         q = mkt["question"]
         yes_p = mkt["yes_p"]
         
+        # Get UW signal
+        uw_sig, uw_action_hint = get_uw_signal_for_market(mkt, uw_signals)
+        uw_summary_text = uw_signal_summary(uw_sig)
+        uw_tags = uw_sig.get("tags", []) if uw_sig else []
+        has_insider = any(t in uw_tags for t in ["insider_trades", "contrarian_whales", "whale_position"])
+        if uw_sig:
+            log(f"  [UW] {q[:40]}: tags={uw_tags[:3]} vol=${uw_sig.get('smart_volume',0):,.0f}")
+        
         # Get news
         snippets = fetch_news_snippets(q)
         
         # Score with Claude
-        action, edge, reasoning = score_with_claude(q, yes_p, mkt["description"], snippets)
-        log(f"  {q[:50]}: {action} edge={edge:.2f} — {reasoning[:60]}")
+        action, edge, reasoning = score_with_claude(q, yes_p, mkt["description"], snippets, uw_summary_text)
         
-        if action == "PASS" or edge < MIN_SCAN_EDGE:
+        # Lower threshold when UW insider/whale signal present
+        effective_threshold = MIN_SCAN_EDGE * (1 - UW_EDGE_DISCOUNT) if has_insider else MIN_SCAN_EDGE
+        
+        # UW override: if Claude PASSed but UW has strong signal and near-miss edge
+        if action == "PASS" and uw_action_hint and has_insider and edge >= MIN_SCAN_EDGE * 0.5:
+            log(f"  [UW override] Claude PASS → using UW hint {uw_action_hint}")
+            action = uw_action_hint
+            edge = max(edge, effective_threshold)
+        
+        log(f"  {q[:50]}: {action} edge={edge:.2f} (thresh={effective_threshold:.2f}) — {reasoning[:55]}")
+        
+        if action == "PASS" or edge < effective_threshold:
             skipped.append({"q": q[:50], "action": action, "edge": edge})
             continue
         
@@ -387,7 +512,9 @@ def main():
                 "size": trade_size,
                 "edge": edge,
                 "reasoning": reasoning,
-                "detail": detail
+                "detail": detail,
+                "uw_signal": bool(uw_sig),
+                "uw_tags": uw_tags[:3],
             })
             log(f"  ✓ Trade placed: {detail}")
             time.sleep(2)  # brief pause between trades
@@ -403,8 +530,9 @@ def main():
     
     if trades_placed:
         trade_lines = "\n".join(
-            f"• <b>{t['action']}</b> ${t['size']:.0f} | edge={t['edge']:.0f}% | {t['q'][:45]}\n"
+            f"• <b>{t['action']}</b> ${t['size']:.0f} | edge={t['edge']:.2f} | {t['q'][:45]}\n"
             f"  ↳ {t['reasoning'][:70]}"
+            + (f"\n  🐋 UW: {','.join(t.get('uw_tags', []))[:40]}" if t.get('uw_signal') else "")
             for t in trades_placed
         )
         msg = (f"🤖 <b>Opportunity Scanner</b> [{now}]\n\n"
@@ -427,3 +555,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
