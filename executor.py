@@ -29,8 +29,9 @@ Setup:
   Run:          systemctl enable executor && systemctl start executor
 """
 
-import os, json, hmac, hashlib, subprocess, time, logging
+import os, json, hmac, hashlib, subprocess, time, logging, threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -45,8 +46,9 @@ PORT           = 8888
 RATE_LIMIT     = 10   # requests per minute
 VENV_PYTHON    = os.path.join(AGENT_DIR, "venv/bin/python3")
 
-# Rate limiting: track request timestamps
+# Rate limiting: track request timestamps (thread-safe lock)
 _request_times = []
+_rate_lock = threading.Lock()
 
 # Configure logging
 logging.basicConfig(
@@ -63,6 +65,11 @@ COMMANDS = {
         f"-o {AGENT_DIR}/autotrader.py && "
         f"{VENV_PYTHON} -c \"import py_compile; py_compile.compile('{AGENT_DIR}/autotrader.py', doraise=True)\" && "
         f"systemctl restart polymarket && echo OK"
+    ),
+    "deploy_executor": (
+        f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/executor.py "
+        f"-o {AGENT_DIR}/executor.py && "
+        f"systemctl restart executor && echo OK"
     ),
     "deploy_weather_scout": (
         f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/weather_scout.py "
@@ -117,13 +124,14 @@ def verify_signature(body_bytes: bytes, sig_header: str) -> bool:
 
 
 def check_rate_limit() -> bool:
-    """Allow max RATE_LIMIT requests per 60 seconds."""
+    """Allow max RATE_LIMIT requests per 60 seconds (thread-safe)."""
     global _request_times
-    now = time.time()
-    _request_times = [t for t in _request_times if now - t < 60]
-    if len(_request_times) >= RATE_LIMIT:
-        return False
-    _request_times.append(now)
+    with _rate_lock:
+        now = time.time()
+        _request_times = [t for t in _request_times if now - t < 60]
+        if len(_request_times) >= RATE_LIMIT:
+            return False
+        _request_times.append(now)
     return True
 
 
@@ -143,6 +151,13 @@ def run_command(cmd: str, timeout: int = 60) -> dict:
         return {"exit_code": -1, "stdout": "", "stderr": f"Command timed out after {timeout}s"}
     except Exception as e:
         return {"exit_code": -1, "stdout": "", "stderr": str(e)}
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """Threaded HTTP server — each request handled in a separate thread.
+    Prevents long-running scripts (e.g. CLOB API calls) from blocking
+    the server and making it unable to accept new connections."""
+    daemon_threads = True  # Threads die when the server dies
 
 
 class ExecutorHandler(BaseHTTPRequestHandler):
@@ -245,9 +260,9 @@ def main():
         print("  Generate one: python3 -c \"import secrets; print(secrets.token_hex(32))\"")
         exit(1)
 
-    log.info(f"Executor starting on port {PORT}")
-    print(f"[executor] Listening on 0.0.0.0:{PORT}")
-    server = HTTPServer(("0.0.0.0", PORT), ExecutorHandler)
+    log.info(f"Executor starting on port {PORT} (threaded)")
+    print(f"[executor] Listening on 0.0.0.0:{PORT} (threaded — each request in own thread)")
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), ExecutorHandler)
     server.serve_forever()
 
 
