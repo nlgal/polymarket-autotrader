@@ -2941,6 +2941,28 @@ def main():
         log(f"Pre-flight check error (non-fatal): {_pfe}", Fore.YELLOW)
     # ──────────────────────────────────────────────────────────────
 
+    # ── Executor health check — restart if hung ──────────────────────────────
+    # The executor service can hang if a long-running script blocks its HTTP handler.
+    # TCP accepts connections but never sends a response. We detect this and kill
+    # the process to let systemd restart it cleanly.
+    try:
+        import requests as _req_ex, subprocess as _sp, time as _t_ex
+        _ex_resp = _req_ex.get("http://127.0.0.1:8888/health", timeout=5)
+        log("Executor health OK", Fore.WHITE)
+    except Exception:
+        # Executor is not responding — try to restart it
+        try:
+            log("Executor not responding — restarting service", Fore.YELLOW)
+            # Kill any process holding port 8888
+            _sp.run(["fuser", "-k", "8888/tcp"], capture_output=True, timeout=5)
+            import time as _t_ex; _t_ex.sleep(2)
+            _sp.run(["systemctl", "restart", "executor"], capture_output=True, timeout=10)
+            _t_ex.sleep(3)
+            log("Executor restart attempted", Fore.WHITE)
+        except Exception as _exe:
+            log(f"Executor restart failed: {_exe}", Fore.YELLOW)
+    # ────────────────────────────────────────────────────────────
+
     # Load persisted state (survives reboots)
     state = load_state()
     log(f"Loaded state: mode={state['mode']}, peak=${state.get('equity_peak_eod') or '?'}", Fore.CYAN)
