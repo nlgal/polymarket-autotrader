@@ -1,135 +1,172 @@
 """
-place_wellington_seoul.py — Manual execution: Wellington 20°C + Seoul 16°C+
-Run: curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/place_wellington_seoul.py -o /opt/polymarket-agent/place_wellington_seoul.py && /opt/polymarket-agent/venv/bin/python3 /opt/polymarket-agent/place_wellington_seoul.py
-
-Trades (ECMWF 50-member ensemble probabilities):
-  1. Wellington 20°C on March 23  — 98% ensemble prob, 20.5¢ market → edge +77.5%
-  2. Seoul 16°C or higher Mar 23  — 96% ensemble prob, 56.5¢ market → edge +39.5%
-     (Seoul exceeds normal 35¢ ceiling — justified because ensemble physics, not LLM opinion)
+5 high-conviction trades:
+1. Iranian regime fall Apr 30 - BUY NO $150
+2. Ceasefire by Apr 15    - BUY YES $100
+3. BTC dip $65k March     - BUY NO  $100
+4. Crude Oil LOW $80 Mar31- BUY NO  $75
+5. US forces Mar31        - BUY NO  $75
 """
-
-import os, sys, requests
+import os, sys, math, time, json, requests
+sys.path.insert(0, '/opt/polymarket-agent')
 from dotenv import load_dotenv
-
-_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-load_dotenv(_env)
-
-PRIVATE_KEY = os.environ.get("POLYMARKET_PRIVATE_KEY", "").strip()
-FUNDER      = os.environ.get("POLYMARKET_FUNDER_ADDRESS", "").strip()
-SIG_TYPE    = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "2"))
-TG_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "").strip()
-TG_CHAT     = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-
-if not PRIVATE_KEY:
-    print("ERROR: POLYMARKET_PRIVATE_KEY not set"); sys.exit(1)
+load_dotenv('/opt/polymarket-agent/.env')
 
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType, PartialCreateOrderOptions
+from py_clob_client.clob_types import (
+    OrderArgs, OrderType, PartialCreateOrderOptions,
+    BalanceAllowanceParams, AssetType
+)
 from py_clob_client.order_builder.constants import BUY
 
-HOST  = "https://clob.polymarket.com"
-CHAIN = 137
-
-TRADES = [
-    {
-        "label":    "Wellington 20°C — March 23",
-        "question": "Will the highest temperature in Wellington be 20°C on March 23?",
-        "token_id": "67598468196090897645259680326620715196763593984988917789795471505377321055369",
-        "ensemble_prob": 0.98,
-        "members": 50,
-        "size": 20.0,
-    },
-    {
-        "label":    "Seoul 16°C or higher — March 23",
-        "question": "Will the highest temperature in Seoul be 16°C or higher on March 23?",
-        "token_id": "57933182851524937060966492638917849074380898417400869784511300773896677074905",
-        "ensemble_prob": 0.96,
-        "members": 50,
-        "size": 20.0,
-    },
-]
+PRIVATE_KEY = os.environ['POLYMARKET_PRIVATE_KEY']
+FUNDER      = os.environ['POLYMARKET_FUNDER_ADDRESS']
+TG_TOKEN    = os.environ.get('TELEGRAM_TOKEN','')
+TG_CHAT     = os.environ.get('TELEGRAM_CHAT_ID','')
 
 def tg(msg):
     if TG_TOKEN and TG_CHAT:
         try:
-            requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                json={"chat_id": TG_CHAT, "text": msg, "parse_mode": "HTML"}, timeout=10)
-        except Exception:
-            pass
+            requests.post(f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage',
+                json={'chat_id': TG_CHAT, 'text': msg, 'parse_mode': 'HTML'}, timeout=10)
+        except: pass
 
-def get_client():
-    creds = ApiCreds(
-        api_key=os.environ.get("CLOB_API_KEY",""),
-        api_secret=os.environ.get("CLOB_API_SECRET",""),
-        api_passphrase=os.environ.get("CLOB_API_PASSPHRASE",""),
-    )
-    return ClobClient(HOST, key=PRIVATE_KEY, chain_id=CHAIN,
-                      creds=creds, signature_type=SIG_TYPE, funder=FUNDER)
+client = ClobClient('https://clob.polymarket.com', key=PRIVATE_KEY,
+                    chain_id=137, signature_type=2, funder=FUNDER)
+client.set_api_creds(client.create_or_derive_api_creds())
 
-def place_trade(client, trade):
-    token_id = trade["token_id"]
-    size_usdc = trade["size"]
-    prob = trade["ensemble_prob"]
-    label = trade["label"]
+try:
+    bal = client.get_balance_allowance(
+        params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2))
+    usdc = float(bal.get('balance', 0)) / 1e6
+    print(f"USDC available: ${usdc:.2f}")
+except Exception as e:
+    print(f"Balance error: {e}")
+    usdc = 999
 
-    print(f"\n── {label} ──")
+# Check existing positions
+held = set()
+try:
+    r = requests.get(f'https://data-api.polymarket.com/positions?user={FUNDER}&limit=50', timeout=10)
+    for p in r.json():
+        if float(p.get('currentValue', 0)) > 5:
+            held.add(p.get('title','').lower()[:50])
+except: pass
 
-    r = requests.get(f"https://clob.polymarket.com/midpoint?token_id={token_id}", timeout=8)
-    mid = float(r.json().get("mid", 0.20)) if r.status_code == 200 else 0.20
-    edge = prob - mid
-    print(f"   Ensemble: {prob:.0%} | Market mid: {mid:.3f} | Edge: {edge:+.3f} | Size: ${size_usdc:.0f}")
+TRADES = [
+    {'name': 'Iranian regime fall Apr 30 — NO',
+     'action': 'BUY_NO',
+     'yes_tok': '48764428286656921488851644351774667118009263342042758531252625616470924946480',
+     'no_tok':  '45752951190517118746418545365916139233368614665273368123939609626397431866529',
+     'size': 150, 'max_p': 0.95,
+     'skip_key': 'will the iranian regime fall by april 30'},
+    {'name': 'Ceasefire by April 15 — YES',
+     'action': 'BUY_YES',
+     'yes_tok': '85191934649046129480174964255278880752271767733539167443243111973456166096127',
+     'no_tok':  '8442709013751543525223072638303914942960068246422295030411662679470140144155',
+     'size': 100, 'max_p': 0.45,
+     'skip_key': 'us x iran ceasefire by april 15'},
+    {'name': 'BTC dip $65k March — NO',
+     'action': 'BUY_NO',
+     'yes_tok': '112493481455469093769281852159558847572704253342416714876781522096078968514094',
+     'no_tok':  '64087619211543545431479218048939484178441767712621033463416084593776314629222',
+     'size': 100, 'max_p': 0.88,
+     'skip_key': 'will bitcoin dip to $65,000 in march'},
+    {'name': 'Crude Oil LOW $80 Mar 31 — NO',
+     'action': 'BUY_NO',
+     'yes_tok': '114929598274366971131336205799393924832857816779736104698632388348104809344836',
+     'no_tok':  '36145084663453267666801423060957500580695518567612602414112493781080641634240',
+     'size': 75, 'max_p': 0.87,
+     'skip_key': 'will crude oil (cl) hit (low) $80 by end of march'},
+    {'name': 'US forces enter Iran Mar 31 — NO',
+     'action': 'BUY_NO',
+     'yes_tok': '42750054381142639205639663180818682570869285140532640407891991570656047928885',
+     'no_tok':  '81697486240392901899167649997008736380137911909662773455994395620863894931973',
+     'size': 75, 'max_p': 0.92,
+     'skip_key': 'us forces enter iran by march 31'},
+]
 
+results = []
+for t in TRADES:
+    name   = t['name']
+    action = t['action']
+    tok    = t['no_tok'] if action == 'BUY_NO' else t['yes_tok']
+    size   = t['size']
+    max_p  = t['max_p']
+    skip_k = t.get('skip_key','')
+
+    if any(skip_k in h for h in held):
+        print(f"SKIP (already holding): {name}")
+        results.append({'name': name, 'status': 'SKIP', 'reason': 'already holding'})
+        continue
+
+    if usdc < size * 0.4:
+        print(f"SKIP (low cash ${usdc:.0f}): {name}")
+        results.append({'name': name, 'status': 'SKIP', 'reason': f'low cash'})
+        continue
+
+    print(f"\n--- {name} ---")
     try:
-        tick     = client.get_tick_size(token_id)
-        neg_risk = client.get_neg_risk(token_id)
+        tick     = client.get_tick_size(tok)
+        neg_risk = client.get_neg_risk(tok)
         tick_f   = float(tick)
-        tick_dec = len(str(tick).rstrip("0").split(".")[-1]) if "." in str(tick) else 0
-        price    = round(round(mid / tick_f) * tick_f, tick_dec)
-        price    = max(0.01, min(0.99, price))
-        shares   = round(size_usdc / price, 2)
+        tick_dec = len(str(tick).rstrip('0').split('.')[-1]) if '.' in str(tick) else 0
 
-        args    = OrderArgs(token_id=token_id, price=price, size=shares, side=BUY)
+        ob   = client.get_order_book(tok)
+        asks = ob.asks if hasattr(ob, 'asks') and ob.asks else []
+        if not asks:
+            print(f"  No asks — skip")
+            results.append({'name': name, 'status': 'SKIP', 'reason': 'no asks'})
+            continue
+
+        raw_p = float(asks[-1].price)
+        price = round(round(raw_p / tick_f) * tick_f, tick_dec)
+        price = max(0.01, min(0.99, price))
+        print(f"  Ask: {raw_p:.4f} → {price:.4f} (max={max_p})")
+
+        if price > max_p:
+            print(f"  SKIP: price {price:.3f} > max {max_p:.3f}")
+            results.append({'name': name, 'status': 'SKIP', 'reason': f'price {price:.3f}'})
+            continue
+
+        shares = round(size / price, 2)
+        print(f"  Buying {shares} shares @ {price} = ${shares*price:.2f}")
+
+        args    = OrderArgs(token_id=tok, price=price, size=shares, side=BUY)
         options = PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk)
         signed  = client.create_order(args, options)
         receipt = client.post_order(signed, OrderType.GTC)
 
-        if receipt.get("success"):
-            print(f"   ✓ BUY {shares} shares @ {price:.3f} = ${size_usdc:.0f} | order={receipt.get('orderID','')[:12]}")
-            tg(f"🌡️ <b>Weather trade</b>\n{trade['question']}\nEnsemble: {prob:.0%} | Mid: {mid:.3f} | Edge: {edge:+.3f}\n${size_usdc:.0f} @ {price:.3f}")
-            return True
+        if receipt.get('success') or receipt.get('orderID'):
+            oid = receipt.get('orderID', 'N/A')
+            print(f"  ✅ {oid[:22]}...")
+            usdc -= size
+            try:
+                client.update_balance_allowance(params=BalanceAllowanceParams(
+                    asset_type=AssetType.CONDITIONAL, token_id=tok, signature_type=2))
+            except: pass
+            results.append({'name': name, 'status': 'OK', 'shares': shares, 'price': price, 'usdc': size})
         else:
-            print(f"   ✗ Failed: {receipt.get('errorMsg','')}")
-            return False
+            err = receipt.get('errorMsg', str(receipt))
+            print(f"  ❌ Rejected: {err}")
+            results.append({'name': name, 'status': 'FAIL', 'error': err[:80]})
+
+        time.sleep(1.5)
     except Exception as e:
-        print(f"   ✗ Error: {e}")
         import traceback; traceback.print_exc()
-        return False
+        results.append({'name': name, 'status': 'ERROR', 'error': str(e)[:100]})
 
-def main():
-    print("=" * 55)
-    print("  WEATHER TRADES: Wellington + Seoul")
-    print("  Source: ECMWF 50-member ensemble")
-    print("=" * 55)
+print('\n' + '='*50)
+ok    = [r for r in results if r['status'] == 'OK']
+total = sum(r.get('usdc',0) for r in ok)
+print(f"Placed: {len(ok)}/{len(TRADES)} | Deployed: ${total}")
 
-    client = get_client()
-    if not os.environ.get("CLOB_API_KEY"):
-        try:
-            creds = client.create_or_derive_api_creds()
-            client.set_api_creds(creds)
-        except Exception as e:
-            print(f"Creds: {e}")
-
-    placed = 0
-    for trade in TRADES:
-        if place_trade(client, trade):
-            placed += 1
-
-    print(f"\n{'='*55}")
-    print(f"  Done: {placed}/{len(TRADES)} placed | ${placed*20:.0f} deployed")
-    print("=" * 55)
-
-    if placed > 0:
-        tg(f"✅ <b>Weather trades: {placed}/2 placed</b>\nWellington 20°C (98% prob) + Seoul 16°C+ (96% prob)\n${placed*20} deployed via ECMWF 50-member ensemble")
-
-if __name__ == "__main__":
-    main()
+lines = ['<b>📊 5-Trade Batch</b>\n']
+for r in results:
+    if r['status'] == 'OK':
+        lines.append(f"✅ {r['name']}\n   {r['shares']} @ {r['price']:.3f} (${r['usdc']})")
+    elif r['status'] == 'SKIP':
+        lines.append(f"⏭️ {r['name']}: {r.get('reason','')}")
+    else:
+        lines.append(f"❌ {r['name']}: {r.get('error','')[:60]}")
+lines.append(f'\n<b>Total deployed: ${total}</b>')
+tg('\n\n'.join(lines))
