@@ -1,157 +1,197 @@
-#!/usr/bin/env python3
 """
-One-shot manual trade placer — Iran war NO positions
-Must run on DigitalOcean server (geo-restriction).
-Usage: python3 /tmp/place_iran_trades.py
+Place 5 trades using the correct py_clob_client API (OrderArgs + create_order + post_order).
 """
-import os, sys, time, json, requests
+import os, sys, math, time, json, requests
 
-# ── Load env ───────────────────────────────────────────────────────────────────
-env = {}
-for path in ["/opt/polymarket-agent/.env", os.path.expanduser("~/.env"), ".env"]:
-    try:
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if "=" in line and not line.startswith("#"):
-                    k, v = line.split("=", 1)
-                    env[k.strip()] = v.strip()
-        break
-    except FileNotFoundError:
-        continue
-
-PRIVATE_KEY = env.get("POLYMARKET_PRIVATE_KEY","")
-FUNDER      = env.get("POLYMARKET_FUNDER_ADDRESS","")
-TG_TOKEN    = env.get("TELEGRAM_TOKEN","")
-TG_CHAT     = env.get("TELEGRAM_CHAT_ID","")
-
-if not PRIVATE_KEY or not FUNDER:
-    print("ERROR: Missing POLYMARKET_PRIVATE_KEY or POLYMARKET_FUNDER_ADDRESS")
-    sys.exit(1)
-
-pk = "0x" + PRIVATE_KEY if not PRIVATE_KEY.startswith("0x") else PRIVATE_KEY
-print(f"FUNDER: {FUNDER}")
-
-# ── CLOB client ────────────────────────────────────────────────────────────────
-venv = "/opt/polymarket-agent/venv/bin/python3"
-if os.path.exists(venv):
-    sys.path.insert(0, "/opt/polymarket-agent")
+PRIVATE_KEY = os.environ['POLYMARKET_PRIVATE_KEY']
+FUNDER = os.environ['POLYMARKET_FUNDER_ADDRESS']
+TG_TOKEN = os.environ.get('TELEGRAM_TOKEN','')
+TG_CHAT = os.environ.get('TELEGRAM_CHAT_ID','')
 
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import (
-    BalanceAllowanceParams, AssetType, OrderArgs, OrderType,
-    PartialCreateOrderOptions
+    OrderArgs, OrderType, PartialCreateOrderOptions,
+    BalanceAllowanceParams, AssetType
 )
 from py_clob_client.order_builder.constants import BUY
 
-client = ClobClient(host="https://clob.polymarket.com", key=pk,
-                    chain_id=137, funder=FUNDER, signature_type=2)
-creds = client.create_or_derive_api_creds()
-client.set_api_creds(creds)
+def tg(msg):
+    if TG_TOKEN and TG_CHAT:
+        try:
+            requests.post(f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage',
+                json={'chat_id': TG_CHAT, 'text': msg, 'parse_mode': 'HTML'}, timeout=10)
+        except: pass
 
-bal = client.get_balance_allowance(
-    params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2))
-cash = float(bal["balance"]) / 1e6
-print(f"Cash available: ${cash:.2f}")
+def get_client():
+    client = ClobClient('https://clob.polymarket.com', key=PRIVATE_KEY,
+                        chain_id=137, signature_type=2, funder=FUNDER)
+    creds = client.create_or_derive_api_creds()
+    client.set_api_creds(creds)
+    return client
 
-if cash < 50:
-    print("Not enough cash. Exiting.")
-    sys.exit(0)
-
-# ── Trades ─────────────────────────────────────────────────────────────────────
-# 2 high-conviction NO positions on Iran war ending by March 31.
-# Thesis: war actively escalating (week 3), strikes ramping up, no ceasefire talks.
-# "US invade Iran by Mar 31" removed — NO at 85¢ is poor risk/reward (only 15¢ premium,
-#   tail risk too high relative to reward; ceasefire/conflict-end NOs at 93-94¢ are better).
-# Total deployment: ~$275, leaving ~$150+ cash for bot cycles.
+# Trade definitions: [YES_token_id, NO_token_id]
 TRADES = [
     {
-        "desc": "US x Iran ceasefire by Mar 31 — NO",
-        "token_id": "51938013536033607392847872760095315790110510345353215258271180769721415981927",
-        "price": 0.94,
-        "usdc": 150.0,
-        "tick": "0.01",
-        "reason": "War in week 3, strikes ramping up, NO formal talks open",
+        'name': 'Iranian regime fall by April 30 — NO',
+        'action': 'BUY_NO',
+        'yes_token': '48764428286656921488851644351774667118009263342042758531252625616470924946480',
+        'no_token':  '45752951190517118746418545365916139233368614665273368123939609626397431866529',
+        'size_usdc': 150,
+        'max_price': 0.94,  # don't pay more than this for NO
     },
     {
-        "desc": "Iran x Israel/US conflict ends by Mar 31 — NO",
-        "token_id": "60020156117014074723286818065417148342963800223162713452237763775488251828713",
-        "price": 0.938,
-        "usdc": 125.0,
-        "tick": "0.001",
-        "reason": "Conflict resolution requires both sides to announce — impossible in 10 days",
+        'name': 'US x Iran ceasefire by April 15 — YES',
+        'action': 'BUY_YES',
+        'yes_token': '85191934649046129480174964255278880752271767733539167443243111973456166096127',
+        'no_token':  '8442709013751543525223072638303914942960068246422295030411662679470140144155',
+        'size_usdc': 100,
+        'max_price': 0.42,  # don't pay more than 42¢ for YES
+    },
+    {
+        'name': 'Bitcoin dip to $65,000 in March — NO',
+        'action': 'BUY_NO',
+        'yes_token': '112493481455469093769281852159558847572704253342416714876781522096078968514094',
+        'no_token':  '64087619211543545431479218048939484178441767712621033463416084593776314629222',
+        'size_usdc': 100,
+        'max_price': 0.87,
+    },
+    {
+        'name': 'Crude Oil LOW $80 by March 31 — NO',
+        'action': 'BUY_NO',
+        'yes_token': '114929598274366971131336205799393924832857816779736104698632388348104809344836',
+        'no_token':  '36145084663453267666801423060957500580695518567612602414112493781080641634240',
+        'size_usdc': 75,
+        'max_price': 0.84,
+    },
+    {
+        'name': 'US forces enter Iran by March 31 — NO',
+        'action': 'BUY_NO',
+        'yes_token': '42750054381142639205639663180818682570869285140532640407891991570656047928885',
+        'no_token':  '81697486240392901899167649997008736380137911909662773455994395620863894931973',
+        'size_usdc': 75,
+        'max_price': 0.93,
     },
 ]
 
-report = ["<b>📊 Manual Iran War NO Trades</b>"]
-placed = 0
-total_deployed = 0.0
+print('Connecting to CLOB...')
+client = get_client()
 
-for t in TRADES:
-    desc   = t["desc"]
-    price  = t["price"]
-    usdc   = min(t["usdc"], cash - 50)  # never leave less than $50
-    tick   = t["tick"]
-    shares = round(usdc / price, 2)
+# Check USDC cash
+try:
+    bal_info = client.get_balance_allowance(
+        params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2))
+    usdc_cash = float(bal_info.get('balance', 0)) / 1e6
+    print(f'USDC available: ${usdc_cash:.2f}')
+except Exception as e:
+    print(f'Balance check error: {e}')
+    usdc_cash = 999
 
-    if usdc < 10:
-        print(f"Skipping {desc} — not enough cash remaining")
-        continue
+results = []
 
-    print(f"\n→ {desc}")
-    print(f"  ${usdc:.2f} @ {price} = {shares} shares")
+for trade in TRADES:
+    action = trade['action']
+    token_id = trade['no_token'] if action == 'BUY_NO' else trade['yes_token']
+    size_usdc = trade['size_usdc']
+    name = trade['name']
+    max_price = trade['max_price']
+
+    print(f'\n--- {name} ---')
 
     try:
-        order = client.create_order(
-            OrderArgs(price=price, size=shares, side=BUY, token_id=t["token_id"]),
-            PartialCreateOrderOptions(tick_size=tick)
-        )
-        resp = client.post_order(order, OrderType.GTC)
+        # Get tick size and neg_risk flag
+        tick = client.get_tick_size(token_id)
+        neg_risk = client.get_neg_risk(token_id)
+        tick_f = float(tick)
+        tick_dec = len(str(tick).rstrip('0').split('.')[-1]) if '.' in str(tick) else 0
 
-        if isinstance(resp, dict):
-            status = resp.get("status","?")
-            err    = resp.get("errorMsg","") or ""
-            oid    = (resp.get("orderID","") or "")[:20]
-            if err:
-                print(f"  ❌ {status}: {err}")
-                report.append(f"❌ {desc}: {err[:60]}")
-            else:
-                print(f"  ✅ {status} | {oid}")
-                report.append(f"✅ {desc[:50]} | ${usdc:.0f} @ {price:.3f}")
-                placed += 1
-                total_deployed += usdc
+        # Get order book for best ask
+        ob = client.get_order_book(token_id)
+        asks = ob.asks if hasattr(ob, 'asks') and ob.asks else []
+        bids = ob.bids if hasattr(ob, 'bids') and ob.bids else []
+
+        if asks:
+            raw_price = float(asks[-1].price)
         else:
-            print(f"  ?: {resp}")
-            report.append(f"? {desc}: {str(resp)[:60]}")
+            print(f'  No asks available — skipping')
+            results.append({'name': name, 'status': 'SKIPPED', 'reason': 'no asks'})
+            continue
+
+        # Round to tick
+        price = round(round(raw_price / tick_f) * tick_f, tick_dec)
+        price = max(0.01, min(0.99, price))
+
+        print(f'  Best ask: {raw_price:.4f} → rounded: {price:.4f} (tick={tick})')
+        print(f'  neg_risk: {neg_risk}')
+
+        # Price guard
+        if price > max_price:
+            print(f'  SKIP: price {price:.3f} > max {max_price:.3f}')
+            results.append({'name': name, 'status': 'SKIPPED', 'reason': f'price {price:.3f} > max {max_price:.3f}'})
+            continue
+
+        # Calculate shares
+        num_shares = round(size_usdc / price, 2)
+        print(f'  Buying {num_shares} shares @ {price} = ${num_shares * price:.2f}')
+
+        # Place GTC limit order at best ask
+        args = OrderArgs(token_id=token_id, price=price, size=num_shares, side=BUY)
+        options = PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk)
+        signed = client.create_order(args, options)
+        receipt = client.post_order(signed, OrderType.GTC)
+
+        print(f'  Receipt: {receipt}')
+
+        if receipt.get('success') or receipt.get('orderID'):
+            print(f'  ✅ SUCCESS — orderID: {receipt.get("orderID","N/A")[:24]}...')
+            # Approve conditional token for future sells
+            try:
+                client.update_balance_allowance(
+                    params=BalanceAllowanceParams(
+                        asset_type=AssetType.CONDITIONAL,
+                        token_id=token_id,
+                        signature_type=2
+                    )
+                )
+                print(f'  Conditional token approved for selling')
+            except Exception as ae:
+                print(f'  Approval warning: {ae}')
+            results.append({
+                'name': name, 'status': 'OK',
+                'shares': num_shares, 'price': price, 'usdc': size_usdc,
+                'order_id': receipt.get('orderID', '')
+            })
+        else:
+            err = receipt.get('errorMsg', str(receipt))
+            print(f'  ❌ Rejected: {err}')
+            results.append({'name': name, 'status': 'REJECTED', 'error': err})
+
+        time.sleep(1.5)
 
     except Exception as e:
-        print(f"  ❌ {type(e).__name__}: {e}")
-        report.append(f"❌ {desc}: {str(e)[:80]}")
+        import traceback
+        print(f'  ERROR: {e}')
+        traceback.print_exc()
+        results.append({'name': name, 'status': 'ERROR', 'error': str(e)[:120]})
 
-    time.sleep(2)
+# Summary
+print('\n' + '='*60)
+print('TRADE SUMMARY')
+ok = [r for r in results if r['status'] == 'OK']
+total_usdc = sum(r.get('usdc', 0) for r in ok)
 
-# ── Final balance ──────────────────────────────────────────────────────────────
-time.sleep(3)
-bal2 = client.get_balance_allowance(
-    params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2))
-cash2 = float(bal2["balance"]) / 1e6
-deployed_actual = round(cash - cash2, 2)
+tg_lines = ['<b>📊 5-Trade Batch — Results</b>\n']
+for r in results:
+    s = r['status']
+    if s == 'OK':
+        tg_lines.append(f"✅ {r['name']}\n   {r['shares']} shares @ {r['price']:.3f} (${r['usdc']})")
+        print(f"✅ {r['name']} — {r['shares']} @ {r['price']:.3f}")
+    elif s == 'SKIPPED':
+        tg_lines.append(f"⏭️ {r['name']}\n   {r.get('reason','')}")
+        print(f"⏭️  SKIP: {r['name']} — {r.get('reason','')}")
+    else:
+        tg_lines.append(f"❌ {r['name']}\n   {r.get('error','')[:80]}")
+        print(f"❌ FAIL: {r['name']} — {r.get('error','')[:80]}")
 
-report.append(f"\nDeployed: ${deployed_actual:.2f} | Cash remaining: ${cash2:.2f}")
-print(f"\n{'='*50}")
-print(f"Placed: {placed}/{len(TRADES)} trades")
-print(f"Deployed: ${deployed_actual:.2f} | Remaining: ${cash2:.2f}")
-
-# ── Telegram ───────────────────────────────────────────────────────────────────
-if TG_TOKEN and TG_CHAT and placed > 0:
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            data={"chat_id": TG_CHAT, "text": "\n".join(report), "parse_mode": "HTML"},
-            timeout=10
-        )
-        print("Telegram sent.")
-    except Exception as e:
-        print(f"Telegram error: {e}")
-
-print("Done.")
+tg_lines.append(f'\n<b>Deployed: ${total_usdc} USDC</b>')
+tg('\n\n'.join(tg_lines))
+print(f'\nTotal deployed: ${total_usdc}')
