@@ -111,6 +111,9 @@ ALLOWED_SCRIPTS = {
     "opportunity_scanner.py",
     "deploy_btc_momentum.py",
     "exit_contradictions.py",
+    "place_5_trades.py",
+    "hormuz_rebalance.py",
+    "preflight.py",
 }
 
 
