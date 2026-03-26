@@ -2850,6 +2850,28 @@ def run_cycle(client, state):
             if uscore > 0 or gap > 0:
                 log(f"  [UW] score={uscore:.1f} gap={gap:.1f} sm={sm:.0f} wallets={n_ins:.0f}", Fore.MAGENTA)
 
+        # ── Short-duration YES guardrail ────────────────────────────────────────
+        # Lesson from losses: near-term BUY_YES on conflict/event markets almost always
+        # lose money. The status quo ("nothing happens by deadline") wins ~75% of the time.
+        # Only allow BUY_YES if: duration > 30 days OR it's not a conflict/event market.
+        _end_date = m.get("endDate", "") or ""
+        _days_left = 999
+        if _end_date:
+            try:
+                import datetime as _dt_mod
+                _end_dt = _dt_mod.datetime.fromisoformat(_end_date.replace("Z",""))
+                _days_left = (_end_dt - _dt_mod.datetime.utcnow()).days
+            except: pass
+        _q_lower_risk = m.get("question","").lower()
+        _is_conflict_event = any(x in _q_lower_risk for x in [
+            "ceasefire", "forces enter", "regime fall", "conflict ends",
+            "military operations", "invasion", "war ends", "peace deal",
+            "strikes end", "kharg", "hormuz", "nuclear deal"
+        ])
+        if action == "BUY_YES" and _is_conflict_event and _days_left < 30:
+            log(f"  SKIP [YES guardrail] Short-duration conflict YES ({_days_left}d): {m['question'][:45]}", Fore.YELLOW)
+            continue
+
         # ── Per-market cap check ────────────────────────────────────────────────
         already_in = (
             existing_exposure.get(q_lower, 0) or

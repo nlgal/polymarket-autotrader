@@ -28,10 +28,10 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY","").strip()
 UW_API_KEY    = os.environ.get("UW_API_KEY","").strip()
 UW_BASE       = "https://api.unusualwhales.com"
 
-MIN_SCAN_EDGE    = 0.12   # Higher bar than autotrader's 0.07 — only obvious mispricings
+MIN_SCAN_EDGE    = 0.15   # Raised from 0.12 — only very high conviction trades's 0.07 — only obvious mispricings
 MIN_LIQUIDITY    = 50000  # $50k minimum liquidity
-MAX_TRADE_SIZE   = 150    # Max USDC per trade
-MIN_TRADE_SIZE   = 50
+MAX_TRADE_SIZE   = 75     # Max USDC per trade — capped to reduce loss per bad bet
+MIN_TRADE_SIZE   = 35
 UW_EDGE_DISCOUNT = 0.20   # Lower edge threshold by 20% when UW insider/whale signal present
 ALREADY_IN_FILE  = "/opt/polymarket-agent/intelligence/existing_positions.json"
 SCAN_LOG         = "/opt/polymarket-agent/opportunity_scan.log"
@@ -461,6 +461,31 @@ def main():
             log(f"  [UW override] Claude PASS → using UW hint {uw_action_hint}")
             action = uw_action_hint
             edge = max(edge, effective_threshold)
+        
+        # ── Risk guardrail: no BUY_YES on short-duration conflict/event markets ──
+        # Lesson: near-term YES bets on Iran/ceasefire/forces events bleed money.
+        # Status quo bias: "nothing happens by deadline" wins far more than "something happens."
+        # Only allow BUY_YES if: duration > 30 days OR market is not an event/deadline type.
+        end_date = mkt.get("endDate", "")
+        days_left = 999
+        if end_date:
+            try:
+                end_dt = datetime.datetime.fromisoformat(end_date.replace("Z",""))
+                days_left = (end_dt - datetime.datetime.utcnow()).days
+            except: pass
+        
+        q_lower_check = q.lower()
+        is_event_market = any(x in q_lower_check for x in [
+            "ceasefire", "forces enter", "regime fall", "conflict ends",
+            "military operations", "invasion", "war ends", "peace deal",
+            "strikes end", "bombing", "kharg", "hormuz"
+        ])
+        
+        if action == "BUY_YES" and is_event_market and days_left < 30:
+            log(f"  SKIP (short-duration YES on event market, {days_left}d left): {q[:45]}")
+            skipped.append({"q": q[:50], "action": action, "edge": edge, 
+                           "skip_reason": f"event YES <30d ({days_left}d)"})
+            continue
         
         log(f"  {q[:50]}: {action} edge={edge:.2f} (thresh={effective_threshold:.2f}) — {reasoning[:55]}")
         
