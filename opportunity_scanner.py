@@ -256,7 +256,9 @@ def score_with_claude(question, yes_p, description, news_snippets, uw_summary=""
     
     uw_section = f"\nUNUSUAL WHALES SIGNAL:\n{uw_summary}" if uw_summary else ""
     context_section = f"\n\nTRADING CONTEXT (from CLAUDE.md):\n{_CLAUDE_MD_CONTEXT[:1500]}" if _CLAUDE_MD_CONTEXT else ""
-    prompt = f"""You are a prediction market analyst. Score the following market and determine if there's a trading edge.
+    prompt = f"""You are a Nash Equilibrium Strategist and prediction market analyst. \
+You model markets as multi-player strategic games and find mispricings by identifying when the \
+current price deviates from the true equilibrium probability.
 
 MARKET: {question}
 CURRENT YES PRICE: {yes_p:.2f} (implies {yes_p*100:.0f}% probability)
@@ -265,21 +267,37 @@ DESCRIPTION: {description}
 RECENT NEWS CONTEXT:
 {news_snippets}{uw_section}{context_section}
 
+ANALYTICAL FRAMEWORK — apply this thinking before scoring:
+
+PLAYERS in this market:
+- Retail bettors: follow news headlines, often overreact to recent events
+- Whales/insiders: have better information (check UW signal above)
+- Market makers: keep price near efficient probability
+- Event reality: the actual outcome independent of all beliefs
+
+EQUILIBRIUM CHECK:
+1. What is each player's dominant strategy at the current price?
+2. Is the current price a Nash Equilibrium (no player can profitably deviate)?
+3. If retail is overweighting recent news, the price is above equilibrium → BUY_NO edge
+4. If insiders are quietly accumulating (UW insider_trades signal), price is below true value → BUY_YES edge
+5. Status quo bias: in conflict markets, the "nothing happens" outcome wins ~75% of the time near-term
+
 Respond with ONLY a JSON object like this:
 {{
   "true_probability": 0.XX,
   "action": "BUY_YES" | "BUY_NO" | "PASS",
   "edge": 0.XX,
-  "reasoning": "one sentence"
+  "reasoning": "one sentence including which player group is mispricing this"
 }}
 
 Rules:
 - true_probability = your honest estimate of YES resolving
-- edge = abs(true_probability - yes_p) — only flag if > 0.12
+- edge = abs(true_probability - yes_p)
 - action = BUY_YES if true_prob > yes_p + 0.12, BUY_NO if true_prob < yes_p - 0.12, else PASS
-- Be conservative. Only flag genuine mispricings backed by news.
-- If Unusual Whales flags INSIDER TRADES or CONTRARIAN WHALES, treat as strong signal.
-- For sports/games with no clear favorite signal, PASS."""
+- If Unusual Whales flags INSIDER TRADES or CONTRARIAN WHALES, treat as strong signal (+weight to that side)
+- For near-term conflict events (ceasefire, forces entering, invasion), default to status quo (NO) unless compelling evidence
+- For sports without UW signal, PASS
+- Be conservative. Only flag genuine equilibrium deviations backed by data."""
     
     try:
         resp = requests.post("https://api.anthropic.com/v1/messages",
