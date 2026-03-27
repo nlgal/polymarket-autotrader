@@ -63,3 +63,10 @@
 - Main loss drivers: conflict event YES bets (3 biggest losses totaling ~$350)
 - Win rate on closed trades: ~64%
 - The system works when trading NOs on status-quo events and long-duration YESes on escalation
+
+## Lesson 9: Scanner bought commodity NO after trigger was already hit
+**Date:** March 27, 2026
+**What happened:** Scanner bought Crude Oil $100 NO for $75 when WTI was already at $101.18. The Nash Equilibrium scoring gave edge=0.19 because news RSS data didn't reflect live commodity prices. Position was nearly worthless immediately.
+**Loss:** ~$71 (sold for $4 from $75 cost)
+**Rule:** Before scoring any commodity price market, check the LIVE price. If WTI >= target price, NO is worthless. Do not rely on LLM scoring alone for factual price checks.
+**Guardrail added:** check_commodity_reality() in Tier 3 pre-filter — fetches live WTI/Gold from Yahoo Finance before any Claude call on commodity markets.
