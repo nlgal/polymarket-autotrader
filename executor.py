@@ -116,6 +116,7 @@ ALLOWED_SCRIPTS = {
     "preflight.py",
     "strategy_optimizer.py",
     "sell_crude_no.py",
+    "run_optimizer_now.py",
     "patch_scanner_claudemd.py",
 }
 
