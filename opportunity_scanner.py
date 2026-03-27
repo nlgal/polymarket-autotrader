@@ -232,7 +232,7 @@ def get_candidate_markets():
 
 def load_claude_md():
     """Load CLAUDE.md context file if it exists."""
-    claude_md_path = os.path.join(AGENT_DIR, "CLAUDE.md")
+    claude_md_path = os.path.join("/opt/polymarket-agent", "CLAUDE.md")
     if os.path.exists(claude_md_path):
         try:
             with open(claude_md_path) as f:
