@@ -115,6 +115,7 @@ ALLOWED_SCRIPTS = {
     "hormuz_rebalance.py",
     "preflight.py",
     "strategy_optimizer.py",
+    "patch_scanner_claudemd.py",
 }
 
 
