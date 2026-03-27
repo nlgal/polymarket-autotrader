@@ -1,37 +1,35 @@
-import requests
+"""Deploy scanner + CLAUDE.md from GitHub, clear pyc cache."""
+import requests, os, glob
 
-# Step 1: Download from GitHub (has both fixes already)
+# Download latest scanner from GitHub
 r = requests.get('https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/opportunity_scanner.py', timeout=15)
 content = r.text
-print(f"Downloaded {len(content)} chars from GitHub")
 
-# Step 2: Apply AGENT_DIR fix (just in case)
+# Apply AGENT_DIR fix if needed
 old = 'claude_md_path = os.path.join(AGENT_DIR, "CLAUDE.md")'
 new = 'claude_md_path = "/opt/polymarket-agent/CLAUDE.md"'
 if old in content:
     content = content.replace(old, new, 1)
     print("Applied AGENT_DIR fix")
 
-# Step 3: Verify no uw_sig issue
-lines = content.split("\n")
-for i, l in enumerate(lines):
-    if "not uw_sig" in l and i < 545:
-        print(f"WARNING: still has uw_sig at L{i+1}: {l}")
-
-# Step 4: Write to disk
+# Write to disk
 with open('/opt/polymarket-agent/opportunity_scanner.py', 'w') as f:
     f.write(content)
-print("Written to disk")
 
-# Step 5: Syntax check
+# Clear pyc cache (prevents stale compiled bytecode)
+for d in glob.glob('/opt/polymarket-agent/**/__pycache__', recursive=True):
+    for fn in os.listdir(d):
+        if 'opportunity_scanner' in fn:
+            os.remove(os.path.join(d, fn))
+            print(f"Cleared cache: {fn}")
+
+# Also download CLAUDE.md
+r2 = requests.get('https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/CLAUDE.md', timeout=10)
+if r2.status_code == 200:
+    with open('/opt/polymarket-agent/CLAUDE.md', 'w') as f:
+        f.write(r2.text)
+    print(f"CLAUDE.md deployed ({len(r2.text)} chars)")
+
 import py_compile
-try:
-    py_compile.compile('/opt/polymarket-agent/opportunity_scanner.py', doraise=True)
-    print("SYNTAX OK")
-except Exception as e:
-    print(f"SYNTAX ERROR: {e}")
-
-# Step 6: Check L516-518
-lines2 = content.split("\n")
-for i in range(514, 523):
-    print(f"L{i+1}: {lines2[i]}")
+py_compile.compile('/opt/polymarket-agent/opportunity_scanner.py', doraise=True)
+print(f"Scanner deployed and verified ({len(content)} chars) — SYNTAX OK")
