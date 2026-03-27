@@ -1,42 +1,30 @@
 
 path = '/opt/polymarket-agent/opportunity_scanner.py'
 with open(path) as f:
-    c = f.read()
+    lines = f.readlines()
 
-fixed = 0
-
-# Fix 1: AGENT_DIR NameError
-old1 = 'claude_md_path = os.path.join(AGENT_DIR, "CLAUDE.md")'
-new1 = 'claude_md_path = "/opt/polymarket-agent/CLAUDE.md"'
-if old1 in c:
-    c = c.replace(old1, new1, 1)
-    fixed += 1
-    print("Fix 1 applied: AGENT_DIR")
-
-# Fix 2: uw_sig UnboundLocalError  
-old2 = '        if _is_sports_pre and not uw_sig:\n            # Sports markets without whale flow are coin-flips for us\n            _pre_pass = False\n            _pre_reason = "sports market, no UW signal"'
-new2 = '        _has_uw_pre = any(t in uw_signals for t in mkt.get("clob_token_ids", []))\n        if _is_sports_pre and not _has_uw_pre:\n            # Sports markets without whale flow are coin-flips for us\n            _pre_pass = False\n            _pre_reason = "sports market, no UW signal"'
-if old2 in c:
-    c = c.replace(old2, new2, 1)
-    fixed += 1
-    print("Fix 2 applied: uw_sig -> _has_uw_pre")
+# Find and fix the problematic line
+for i, line in enumerate(lines):
+    if 'if _is_sports_pre and not uw_sig:' in line:
+        # Insert the _has_uw_pre check before this line
+        indent = '        '
+        check_line = indent + '_has_uw_pre = any(t in uw_signals for t in mkt.get("clob_token_ids", []))\n'
+        lines[i] = check_line + line.replace('not uw_sig', 'not _has_uw_pre')
+        print(f"Fixed line {i+1}")
+        break
 
 with open(path, 'w') as f:
-    f.write(c)
+    f.writelines(lines)
 
 # Verify
 with open(path) as f:
-    cv = f.read()
-lines = cv.split('\n')
-for i in range(509, 525):
-    print(f"L{i+1}: {lines[i]}")
+    c = f.read()
+for j, l in enumerate(c.split('\n')[510:525], start=511):
+    print(f"L{j}: {l}")
 
-print(f"\nTotal fixes applied: {fixed}")
-
-# Quick syntax check
-import py_compile, tempfile, shutil
+import py_compile
 try:
     py_compile.compile(path, doraise=True)
-    print("SYNTAX OK")
+    print("\nSYNTAX OK")
 except Exception as e:
-    print(f"SYNTAX ERROR: {e}")
+    print(f"\nERROR: {e}")
