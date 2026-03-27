@@ -439,6 +439,78 @@ def main():
         q = mkt["question"]
         yes_p = mkt["yes_p"]
         
+        # ════════════════════════════════════════════════════════════════
+        # TIER 3 — EYES: Rule-based pre-filter (no LLM, no API calls)
+        # Inspired by 3-tier model routing: cheap checks first, expensive last.
+        # Skip obvious non-opportunities instantly, saving ~40% of Claude calls.
+        # ════════════════════════════════════════════════════════════════
+        
+        _pre_pass = True
+        _pre_reason = ""
+        
+        # Rule 1: Coin-flip markets with no signal — skip (0.42–0.58 yes_p range)
+        # These require genuine insight to trade; without UW signal they're noise.
+        if 0.42 <= yes_p <= 0.58:
+            # Only proceed if UW already has signal OR it's a high-priority category
+            _has_preload_signal = any(
+                t in (mkt.get("clob_token_ids") or []) 
+                for t in (uw_signals or {})
+            )
+            if not _has_preload_signal:
+                _pre_pass = False
+                _pre_reason = f"coin-flip ({yes_p:.2f}) no signal"
+        
+        # Rule 2: Near-certain markets (>92¢ or <8¢) — skip (already handled by get_candidate_markets
+        # but re-check here since UW-boosted markets may slip through)
+        if yes_p > 0.93 or yes_p < 0.07:
+            _pre_pass = False
+            _pre_reason = f"near-certain ({yes_p:.2f}) — no edge"
+        
+        # Rule 3: Short-duration YES on conflict/event markets — blocked (earlier rule)
+        # Already applied below, but catch it early to avoid news fetch
+        _end_pre = mkt.get("endDate", "")
+        _days_pre = 999
+        if _end_pre:
+            try:
+                _edt = datetime.datetime.fromisoformat(_end_pre.replace("Z",""))
+                _days_pre = (_edt - datetime.datetime.utcnow()).days
+            except: pass
+        
+        _q_pre = q.lower()
+        _conflict_keywords = [
+            "ceasefire", "forces enter", "regime fall", "conflict ends",
+            "military operations", "invasion", "invade", "war ends", "peace deal",
+            "strikes end", "bombing", "kharg", "hormuz", "nuclear deal",
+            "attack iran", "bomb iran", "invades iran", "us invade"
+        ]
+        _is_conflict_pre = any(x in _q_pre for x in _conflict_keywords)
+        if _days_pre < 30 and _is_conflict_pre and yes_p > 0.15:
+            # YES side of a near-term conflict market — almost always loses
+            # Exception: only allow if price is very low (<15¢) — cheap lottery  
+            _pre_pass = False
+            _pre_reason = f"short-duration conflict ({_days_pre}d) at {yes_p:.2f}"
+        
+        # Rule 4: Sports markets without strong data signal — skip in off-hours
+        import datetime as _dt2
+        _hour_utc = _dt2.datetime.utcnow().hour
+        _is_sports_pre = any(x in _q_pre for x in [
+            "vs.", "vs ", "match", "game", "championship", "tournament",
+            "playoff", "cup", "league", "bowl", "series"
+        ])
+        if _is_sports_pre and not uw_sig:
+            # Sports markets without whale flow are coin-flips for us
+            _pre_pass = False
+            _pre_reason = "sports market, no UW signal"
+        
+        if not _pre_pass:
+            log(f"  [T3-SKIP] {q[:50]} — {_pre_reason}")
+            skipped.append({"q": q[:50], "action": "PASS", "edge": 0, 
+                           "skip_reason": f"pre-filter: {_pre_reason}"})
+            continue
+        # ════════════════════════════════════════════════════════════════
+        # End Tier 3 pre-filter
+        # ════════════════════════════════════════════════════════════════
+        
         # Get UW signal
         uw_sig, uw_action_hint = get_uw_signal_for_market(mkt, uw_signals)
         uw_summary_text = uw_signal_summary(uw_sig)
