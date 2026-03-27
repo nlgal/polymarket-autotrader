@@ -1,0 +1,20 @@
+{
+  "MIN_SCAN_EDGE": 0.15,
+  "MAX_TRADE_SIZE": 75,
+  "MIN_TRADE_SIZE": 35,
+  "UW_EDGE_DISCOUNT": 0.20,
+  "COIN_FLIP_RANGE": [0.42, 0.58],
+  "NEAR_CERTAIN_HIGH": 0.93,
+  "NEAR_CERTAIN_LOW": 0.07,
+  "CONFLICT_MIN_DAYS": 30,
+  "COMMODITY_BUFFER_USD": 5.0,
+  "_comment": "BLACKLISTED_CONDITION_IDS: Markets we must never trade again, by lesson learned",
+  "BLACKLISTED_CONDITION_IDS": {
+    "0xc5300759dc2089042380795fe7384010a6b6ebdf9e6da7ed3f786d9a5f61c563": "Lesson 9+10: Crude Oil $100 HIGH — bot bought NO twice when WTI was already at trigger"
+  },
+  "_comment2": "BLACKLISTED_KEYWORDS: Question substrings that auto-skip at Tier 3 (no LLM)",
+  "BLACKLISTED_KEYWORDS": [
+    "crude oil.*high.*\\$100",
+    "crude oil.*hit.*\\$100"
+  ]
+}

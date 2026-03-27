@@ -20,6 +20,21 @@ from dotenv import load_dotenv
 load_dotenv('/opt/polymarket-agent/.env')
 
 # ── Config ────────────────────────────────────────────────────────────────────
+
+# Load scanner config (tunable params + blacklists)
+def _load_config():
+    import json as _json, os as _os
+    cfg_path = _os.path.join("/opt/polymarket-agent", "scanner_config.json")
+    try:
+        with open(cfg_path) as _f:
+            return _json.load(_f)
+    except:
+        return {}
+
+_SCANNER_CONFIG = _load_config()
+BLACKLISTED_CONDITIONS = set(_SCANNER_CONFIG.get("BLACKLISTED_CONDITION_IDS", {}).keys())
+COMMODITY_BUFFER_USD = float(_SCANNER_CONFIG.get("COMMODITY_BUFFER_USD", 5.0))
+
 PRIVATE_KEY = os.environ.get("POLYMARKET_PRIVATE_KEY","").strip()
 FUNDER      = os.environ.get("POLYMARKET_FUNDER_ADDRESS","").strip()
 TG_TOKEN    = os.environ.get("TELEGRAM_TOKEN","").strip()
@@ -92,7 +107,7 @@ def check_commodity_reality(question, yes_p):
             if wti is not None:
                 gap = target - wti  # positive = not yet hit; negative = already exceeded
                 # HARD BLOCK: price within $5 of trigger in either direction
-                if abs(gap) <= 5.0:
+                if abs(gap) <= COMMODITY_BUFFER_USD:
                     return True, f"WTI ${wti:.2f} within $5 of ${target:.0f} HIGH trigger — too risky (gap=${gap:+.2f})"
                 # HARD BLOCK: price already exceeded trigger → YES is certain, NO is worthless
                 if gap < 0:
@@ -110,7 +125,7 @@ def check_commodity_reality(question, yes_p):
             wti = get_commodity_price("CL=F")
             if wti is not None:
                 gap = wti - target  # positive = not yet hit; negative = already dropped below
-                if abs(gap) <= 5.0:
+                if abs(gap) <= COMMODITY_BUFFER_USD:
                     return True, f"WTI ${wti:.2f} within $5 of ${target:.0f} LOW trigger — too risky (gap={gap:+.2f})"
                 if gap < 0:
                     return True, f"WTI ${wti:.2f} already below ${target:.0f} LOW trigger — NO worthless"
@@ -567,6 +582,13 @@ def main():
         
         _pre_pass = True
         _pre_reason = ""
+        
+        # Rule 0: Market-level blacklist — never trade again (learned from mistakes)
+        _cond_id = mkt.get("conditionId", "")
+        if _cond_id in BLACKLISTED_CONDITIONS:
+            _pre_pass = False
+            reason_txt = _SCANNER_CONFIG.get("BLACKLISTED_CONDITION_IDS", {}).get(_cond_id, "blacklisted market")
+            _pre_reason = f"BLACKLISTED: {reason_txt[:60]}"
         
         # Rule 1: Coin-flip markets with no signal — skip (0.42–0.58 yes_p range)
         # These require genuine insight to trade; without UW signal they're noise.
