@@ -477,8 +477,9 @@ def main():
         q_lower_check = q.lower()
         is_event_market = any(x in q_lower_check for x in [
             "ceasefire", "forces enter", "regime fall", "conflict ends",
-            "military operations", "invasion", "war ends", "peace deal",
-            "strikes end", "bombing", "kharg", "hormuz"
+            "military operations", "invasion", "invade", "war ends", "peace deal",
+            "strikes end", "bombing", "kharg", "hormuz", "attack iran", "bomb iran",
+            "us invade", "invades iran", "occupy iran"
         ])
         
         if action == "BUY_YES" and is_event_market and days_left < 30:

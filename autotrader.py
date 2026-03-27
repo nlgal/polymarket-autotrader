@@ -2865,8 +2865,9 @@ def run_cycle(client, state):
         _q_lower_risk = m.get("question","").lower()
         _is_conflict_event = any(x in _q_lower_risk for x in [
             "ceasefire", "forces enter", "regime fall", "conflict ends",
-            "military operations", "invasion", "war ends", "peace deal",
-            "strikes end", "kharg", "hormuz", "nuclear deal"
+            "military operations", "invasion", "invade", "war ends", "peace deal",
+            "strikes end", "kharg", "hormuz", "nuclear deal", "bomb iran",
+            "attack iran", "strike iran", "occupy", "capture tehran"
         ])
         if action == "BUY_YES" and _is_conflict_event and _days_left < 30:
             log(f"  SKIP [YES guardrail] Short-duration conflict YES ({_days_left}d): {m['question'][:45]}", Fore.YELLOW)
