@@ -231,14 +231,18 @@ def get_candidate_markets():
     return sorted(candidates, key=lambda x: x["volume24h"], reverse=True)[:25]
 
 def load_claude_md():
-    """Load CLAUDE.md context file if it exists."""
-    claude_md_path = os.path.join("/opt/polymarket-agent", "CLAUDE.md")
-    if os.path.exists(claude_md_path):
-        try:
-            with open(claude_md_path) as f:
-                return f.read()[:3000]  # cap at 3000 chars to control token usage
-        except: pass
-    return ""
+    """Load CLAUDE.md + lessons.md for full trading context + mistake history."""
+    parts = []
+    agent_dir = "/opt/polymarket-agent"
+    for fname, cap in [("CLAUDE.md", 1500), ("lessons.md", 1200)]:
+        fpath = os.path.join(agent_dir, fname)
+        if os.path.exists(fpath):
+            try:
+                with open(fpath) as f:
+                    text = f.read()[:cap]
+                parts.append(f"--- {fname} ---\n{text}")
+            except: pass
+    return "\n\n".join(parts) if parts else ""
 
 
 # Cache CLAUDE.md at module load time (read once per scan run)
