@@ -513,7 +513,9 @@ def main():
             "vs.", "vs ", "match", "game", "championship", "tournament",
             "playoff", "cup", "league", "bowl", "series"
         ])
-        if _is_sports_pre and not uw_sig:
+        # uw_sig is not yet loaded at pre-filter stage — check uw_signals dict directly
+        _has_uw_pre = any(t in uw_signals for t in mkt.get("clob_token_ids", []))
+        if _is_sports_pre and not _has_uw_pre:
             # Sports markets without whale flow are coin-flips for us
             _pre_pass = False
             _pre_reason = "sports market, no UW signal"
