@@ -78,3 +78,14 @@
 **Root cause:** The bug: `if yes_p < 0.5 and wti >= target * 0.99` — this means "only block if market says NO is likely AND price is near trigger". But when market says YES is 57% likely, that's exactly when price is closest to trigger and NO is most dangerous.
 **Rule:** For commodity HIGH/LOW target markets, if price is within $5 of the trigger, SKIP regardless of yes_p. The proximity to trigger is what matters, not the market's probability direction.
 **Guardrail added:** check_commodity_reality() now uses `abs(gap) <= 5.0` hard block — skips if price is within $5 of trigger in either direction, independent of yes_p.
+
+## Lesson 11: BTC dip NO bought when price was 1.8% above trigger
+**Date:** March 27, 2026
+**What happened:** Scanner bought "Will Bitcoin dip to $65,000 in March? NO" for $2.66 when BTC was at $66,173 — only 1.8% ($1,173) above the trigger. With 4 days left in March, this is a near coin-flip. The commodity check had no BTC/crypto support at all — it only handled crude oil and gold keywords.
+**Loss:** ~$2.66 at risk (small but same bug pattern, would have been larger)
+**Root cause:** check_commodity_reality() was never extended to cover crypto. "Bitcoin" and "btc" keywords weren't checked. The $5 absolute USD buffer also would have been useless for BTC ($5 on a $66k asset = 0.008% — meaningless).
+**Rule:** For crypto dip markets, use a PERCENTAGE buffer (5% of target). If BTC is within 5% of a dip target, it's too close to call — skip it.
+**Guardrails added:**
+1. BTC/crypto dip check in check_commodity_reality() — 5% percentage buffer
+2. Both BTC $65k and $60k markets blacklisted in _HARDCODED_BLACKLIST
+3. Lesson logged to prevent future recurrence

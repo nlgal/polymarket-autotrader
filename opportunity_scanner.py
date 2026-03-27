@@ -27,6 +27,10 @@ load_dotenv('/opt/polymarket-agent/.env')
 _HARDCODED_BLACKLIST = {
     "0xc5300759dc2089042380795fe7384010a6b6ebdf9e6da7ed3f786d9a5f61c563":
         "Lesson 9+10: Crude Oil $100 HIGH — bought NO twice when WTI was at trigger",
+    "0x36912c9832f0fd104d734b579fb9b3a1b31bbdc946a67356723407e3bdc96dbc":
+        "Lesson 11: BTC $65k dip NO — bought when BTC was 1.8% above trigger ($66,173 vs $65k)",
+    "0x4290a4aa43a0707f0f1193c73667074f2ef5ce8ab5d6fcdd4ca645bfe1528f03":
+        "Lesson 11: BTC $60k dip YES — BTC needs 10% drop in 4 days, unrealistic",
 }
 
 def _load_config():
@@ -138,6 +142,27 @@ def check_commodity_reality(question, yes_p):
                     return True, f"WTI ${wti:.2f} within $5 of ${target:.0f} LOW trigger — too risky (gap={gap:+.2f})"
                 if gap < 0:
                     return True, f"WTI ${wti:.2f} already below ${target:.0f} LOW trigger — NO worthless"
+    
+    # Bitcoin / crypto dip-to-X checks
+    # "Will Bitcoin dip to $65,000" = we're betting on a LOW — same logic as crude LOW
+    if ("bitcoin" in q_lower or "btc" in q_lower) and ("dip" in q_lower or "low" in q_lower or "fall" in q_lower or "drop" in q_lower):
+        import re as _re
+        targets = _re.findall(r"\$([0-9,]+)", question)
+        if targets:
+            target = float(targets[0].replace(",", ""))
+            btc = get_commodity_price("BTC-USD")
+            if btc is not None:
+                gap_pct = (btc - target) / target  # positive = BTC above target (not yet dipped)
+                gap_abs = btc - target
+                # Block NO on dip market if BTC is within 5% of target (too close to call)
+                if yes_p < 0.5 and gap_pct <= 0.05:  # buying NO but price within 5%
+                    return True, f"BTC ${btc:,.0f} within 5% of ${target:,.0f} dip target — NO risky (gap={gap_pct*100:.1f}%)"
+                # Block YES on dip market if BTC is >15% above target with <7 days left
+                if yes_p > 0.5 and gap_pct > 0.15:
+                    return True, f"BTC ${btc:,.0f} too far above ${target:,.0f} — dip unlikely (gap={gap_pct*100:.1f}%)"
+                # Block if BTC already dipped below target (YES is guaranteed)
+                if gap_pct < 0:
+                    return True, f"BTC ${btc:,.0f} already below ${target:,.0f} — NO is worthless"
     
     # Gold checks
     if ("gold" in q_lower or "gc" in q_lower) and ("high" in q_lower or "low" in q_lower):
