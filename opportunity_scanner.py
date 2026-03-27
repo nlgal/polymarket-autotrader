@@ -230,12 +230,28 @@ def get_candidate_markets():
     
     return sorted(candidates, key=lambda x: x["volume24h"], reverse=True)[:25]
 
+def load_claude_md():
+    """Load CLAUDE.md context file if it exists."""
+    claude_md_path = os.path.join(AGENT_DIR, "CLAUDE.md")
+    if os.path.exists(claude_md_path):
+        try:
+            with open(claude_md_path) as f:
+                return f.read()[:3000]  # cap at 3000 chars to control token usage
+        except: pass
+    return ""
+
+
+# Cache CLAUDE.md at module load time (read once per scan run)
+_CLAUDE_MD_CONTEXT = load_claude_md()
+
+
 def score_with_claude(question, yes_p, description, news_snippets, uw_summary=""):
-    """Use Claude to score the edge given fresh news."""
+    """Use Claude to score the edge given fresh news and persistent trading context."""
     if not ANTHROPIC_KEY:
         return "PASS", 0.0, "No API key"
     
     uw_section = f"\nUNUSUAL WHALES SIGNAL:\n{uw_summary}" if uw_summary else ""
+    context_section = f"\n\nTRADING CONTEXT (from CLAUDE.md):\n{_CLAUDE_MD_CONTEXT[:1500]}" if _CLAUDE_MD_CONTEXT else ""
     prompt = f"""You are a prediction market analyst. Score the following market and determine if there's a trading edge.
 
 MARKET: {question}
@@ -243,7 +259,7 @@ CURRENT YES PRICE: {yes_p:.2f} (implies {yes_p*100:.0f}% probability)
 DESCRIPTION: {description}
 
 RECENT NEWS CONTEXT:
-{news_snippets}{uw_section}
+{news_snippets}{uw_section}{context_section}
 
 Respond with ONLY a JSON object like this:
 {{
