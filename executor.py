@@ -114,6 +114,7 @@ ALLOWED_SCRIPTS = {
     "place_5_trades.py",
     "hormuz_rebalance.py",
     "preflight.py",
+    "strategy_optimizer.py",
 }
 
 
