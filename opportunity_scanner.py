@@ -69,43 +69,69 @@ def get_commodity_price(symbol):
 def check_commodity_reality(question, yes_p):
     """
     Reality check for commodity price markets.
-    If WTI has already crossed $100 and we're about to buy NO on $100 target,
-    that NO is worthless. Catch it before wasting a Claude API call.
+    
+    LESSON 9+10 FIX: Original code used `yes_p < 0.5` as proxy for "we are
+    buying NO", but when market is at 57% YES the check never fires — yet
+    the scanner still picks it as a NO trade. The fix: block the trade when
+    price is within $5 of the trigger, regardless of yes_p direction.
+    
+    Rule: If the commodity is within $5 (~5%) of the trigger price, the market
+    is too close to call and the NO has no edge. Skip it entirely.
+    
     Returns (should_skip, reason) tuple.
     """
     q_lower = question.lower()
     
     # Crude oil HIGH target checks
-    if ("crude oil" in q_lower or "wti" in q_lower) and "high" in q_lower:
-        import re
-        # Extract the target price from the question
-        targets = re.findall(r"\$([0-9,]+)", question)
+    if ("crude oil" in q_lower or "wti" in q_lower or "cl)" in q_lower) and "high" in q_lower:
+        import re as _re
+        targets = _re.findall(r"\$([0-9,]+)", question)
         if targets:
             target = float(targets[0].replace(",", ""))
             wti = get_commodity_price("CL=F")
             if wti is not None:
-                # If buying NO on "will it hit $X" but price already exceeded $X
-                if yes_p < 0.5 and wti >= target * 0.99:  # within 1% of trigger
-                    return True, f"WTI ${wti:.2f} near/above ${target:.0f} target — NO is worthless"
-                # If buying YES on "will it hit $X" but price is far below with days left
-                if yes_p > 0.5 and wti < target * 0.92:  # >8% away
-                    return True, f"WTI ${wti:.2f} too far from ${target:.0f} target — YES unlikely"
+                gap = target - wti  # positive = not yet hit; negative = already exceeded
+                # HARD BLOCK: price within $5 of trigger in either direction
+                if abs(gap) <= 5.0:
+                    return True, f"WTI ${wti:.2f} within $5 of ${target:.0f} HIGH trigger — too risky (gap=${gap:+.2f})"
+                # HARD BLOCK: price already exceeded trigger → YES is certain, NO is worthless
+                if gap < 0:
+                    return True, f"WTI ${wti:.2f} already exceeded ${target:.0f} HIGH trigger — NO worthless"
+                # Soft block: buying YES when price is >8% away with short time
+                if yes_p > 0.5 and gap > target * 0.08:
+                    return True, f"WTI ${wti:.2f} too far from ${target:.0f} HIGH target — YES unlikely (gap=${gap:.2f})"
+    
+    # Crude oil LOW target checks
+    if ("crude oil" in q_lower or "wti" in q_lower or "cl)" in q_lower) and "low" in q_lower:
+        import re as _re
+        targets = _re.findall(r"\$([0-9,]+)", question)
+        if targets:
+            target = float(targets[0].replace(",", ""))
+            wti = get_commodity_price("CL=F")
+            if wti is not None:
+                gap = wti - target  # positive = not yet hit; negative = already dropped below
+                if abs(gap) <= 5.0:
+                    return True, f"WTI ${wti:.2f} within $5 of ${target:.0f} LOW trigger — too risky (gap={gap:+.2f})"
+                if gap < 0:
+                    return True, f"WTI ${wti:.2f} already below ${target:.0f} LOW trigger — NO worthless"
     
     # Gold checks
     if ("gold" in q_lower or "gc" in q_lower) and ("high" in q_lower or "low" in q_lower):
-        targets = []
-        import re
-        targets = re.findall(r"\$([0-9,]+)", question)
+        import re as _re
+        targets = _re.findall(r"\$([0-9,]+)", question)
         if targets:
             target = float(targets[0].replace(",", ""))
             gold = get_commodity_price("GC=F")
             if gold is not None:
-                if "low" in q_lower and yes_p < 0.5 and gold <= target * 1.01:
-                    return True, f"Gold ${gold:.0f} near/below ${target:.0f} LOW target — NO is worthless"
-                if "high" in q_lower and yes_p < 0.5 and gold >= target * 0.99:
-                    return True, f"Gold ${gold:.0f} near/above ${target:.0f} HIGH target — NO is worthless"
+                pct_gap = abs(gold - target) / target
+                if pct_gap <= 0.015:  # within 1.5% of trigger
+                    return True, f"Gold ${gold:.0f} within 1.5% of ${target:.0f} trigger — too risky"
+                if "high" in q_lower and gold > target:
+                    return True, f"Gold ${gold:.0f} already exceeded ${target:.0f} HIGH trigger — NO worthless"
+                if "low" in q_lower and gold < target:
+                    return True, f"Gold ${gold:.0f} already below ${target:.0f} LOW trigger — NO worthless"
     
-    return False, ""
+    return False, "ok"
 
 
 def get_usdc_balance():

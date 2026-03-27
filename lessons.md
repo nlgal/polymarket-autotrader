@@ -70,3 +70,11 @@
 **Loss:** ~$71 (sold for $4 from $75 cost)
 **Rule:** Before scoring any commodity price market, check the LIVE price. If WTI >= target price, NO is worthless. Do not rely on LLM scoring alone for factual price checks.
 **Guardrail added:** check_commodity_reality() in Tier 3 pre-filter — fetches live WTI/Gold from Yahoo Finance before any Claude call on commodity markets.
+
+## Lesson 10: Commodity check used yes_p as proxy for trade direction — wrong
+**Date:** March 27, 2026
+**What happened:** Scanner bought Crude Oil $100 NO for $75 when WTI was at $99.64 (just $0.36 from trigger). The commodity reality check (Lesson 9's fix) used `yes_p < 0.5` as a proxy for "we're buying NO". But yes_p was 0.57 — so the check NEVER FIRED. The bot still bought NO with price essentially at the trigger.
+**Loss:** ~$75 at risk (position still open, likely to lose if WTI settles at $100 before March 31)
+**Root cause:** The bug: `if yes_p < 0.5 and wti >= target * 0.99` — this means "only block if market says NO is likely AND price is near trigger". But when market says YES is 57% likely, that's exactly when price is closest to trigger and NO is most dangerous.
+**Rule:** For commodity HIGH/LOW target markets, if price is within $5 of the trigger, SKIP regardless of yes_p. The proximity to trigger is what matters, not the market's probability direction.
+**Guardrail added:** check_commodity_reality() now uses `abs(gap) <= 5.0` hard block — skips if price is within $5 of trigger in either direction, independent of yes_p.
