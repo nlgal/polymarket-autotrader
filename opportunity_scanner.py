@@ -52,6 +52,62 @@ def log(msg):
             f.write(line + "\n")
     except: pass
 
+
+# ── Live commodity price checker ─────────────────────────────────────────────
+
+def get_commodity_price(symbol):
+    """Fetch live commodity/stock price from Yahoo Finance."""
+    try:
+        r = requests.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d",
+            timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+        return float(r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"])
+    except:
+        return None
+
+
+def check_commodity_reality(question, yes_p):
+    """
+    Reality check for commodity price markets.
+    If WTI has already crossed $100 and we're about to buy NO on $100 target,
+    that NO is worthless. Catch it before wasting a Claude API call.
+    Returns (should_skip, reason) tuple.
+    """
+    q_lower = question.lower()
+    
+    # Crude oil HIGH target checks
+    if ("crude oil" in q_lower or "wti" in q_lower) and "high" in q_lower:
+        import re
+        # Extract the target price from the question
+        targets = re.findall(r"\$([0-9,]+)", question)
+        if targets:
+            target = float(targets[0].replace(",", ""))
+            wti = get_commodity_price("CL=F")
+            if wti is not None:
+                # If buying NO on "will it hit $X" but price already exceeded $X
+                if yes_p < 0.5 and wti >= target * 0.99:  # within 1% of trigger
+                    return True, f"WTI ${wti:.2f} near/above ${target:.0f} target — NO is worthless"
+                # If buying YES on "will it hit $X" but price is far below with days left
+                if yes_p > 0.5 and wti < target * 0.92:  # >8% away
+                    return True, f"WTI ${wti:.2f} too far from ${target:.0f} target — YES unlikely"
+    
+    # Gold checks
+    if ("gold" in q_lower or "gc" in q_lower) and ("high" in q_lower or "low" in q_lower):
+        targets = []
+        import re
+        targets = re.findall(r"\$([0-9,]+)", question)
+        if targets:
+            target = float(targets[0].replace(",", ""))
+            gold = get_commodity_price("GC=F")
+            if gold is not None:
+                if "low" in q_lower and yes_p < 0.5 and gold <= target * 1.01:
+                    return True, f"Gold ${gold:.0f} near/below ${target:.0f} LOW target — NO is worthless"
+                if "high" in q_lower and yes_p < 0.5 and gold >= target * 0.99:
+                    return True, f"Gold ${gold:.0f} near/above ${target:.0f} HIGH target — NO is worthless"
+    
+    return False, ""
+
+
 def get_usdc_balance():
     """Get available USDC cash."""
     from py_clob_client.client import ClobClient
@@ -503,6 +559,12 @@ def main():
         if yes_p > 0.93 or yes_p < 0.07:
             _pre_pass = False
             _pre_reason = f"near-certain ({yes_p:.2f}) — no edge"
+        
+        # Rule 2.5: Commodity price reality check — don't buy NO if commodity already hit target
+        _skip_comm, _comm_reason = check_commodity_reality(q, yes_p)
+        if _skip_comm:
+            _pre_pass = False
+            _pre_reason = _comm_reason
         
         # Rule 3: Short-duration YES on conflict/event markets — blocked (earlier rule)
         # Already applied below, but catch it early to avoid news fetch
