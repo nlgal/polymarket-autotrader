@@ -292,12 +292,27 @@ Respond with ONLY a JSON object:
             return None, f"API error {resp.status_code}"
 
         content = resp.json().get("content", [{}])[0].get("text", "")
-        match = re.search(r'\{[^{}]*"parameter"[^{}]*\}', content, re.DOTALL)
-        if not match:
-            match = re.search(r'\{.*?\}', content, re.DOTALL)
-        if match:
-            return json.loads(match.group()), ""
-        return None, f"no json in: {content[:100]}"
+        # Try to extract JSON - Claude sometimes adds markdown or trailing text
+        # Try ```json block first
+        code_match = re.search(r'```(?:json)?\s*({.*?})\s*```', content, re.DOTALL)
+        if code_match:
+            try:
+                return json.loads(code_match.group(1)), ""
+            except: pass
+        # Try raw JSON object
+        for match in re.finditer(r'\{[^{}]+\}', content, re.DOTALL):
+            try:
+                result = json.loads(match.group())
+                if "parameter" in result:
+                    return result, ""
+            except: continue
+        # Try finding any JSON-like structure
+        bracket_match = re.search(r'(\{[\s\S]*?\})', content)
+        if bracket_match:
+            try:
+                return json.loads(bracket_match.group(1)), ""
+            except: pass
+        return None, f"no valid json in: {content[:150]}"
     except Exception as e:
         return None, str(e)[:80]
 
