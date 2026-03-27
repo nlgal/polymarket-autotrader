@@ -22,6 +22,13 @@ load_dotenv('/opt/polymarket-agent/.env')
 # ── Config ────────────────────────────────────────────────────────────────────
 
 # Load scanner config (tunable params + blacklists)
+# Hardcoded blacklist — markets to NEVER trade again (by conditionId)
+# These are also in scanner_config.json for reference, but this is the authoritative source.
+_HARDCODED_BLACKLIST = {
+    "0xc5300759dc2089042380795fe7384010a6b6ebdf9e6da7ed3f786d9a5f61c563":
+        "Lesson 9+10: Crude Oil $100 HIGH — bought NO twice when WTI was at trigger",
+}
+
 def _load_config():
     import json as _json, os as _os
     cfg_path = _os.path.join("/opt/polymarket-agent", "scanner_config.json")
@@ -32,7 +39,9 @@ def _load_config():
         return {}
 
 _SCANNER_CONFIG = _load_config()
-BLACKLISTED_CONDITIONS = set(_SCANNER_CONFIG.get("BLACKLISTED_CONDITION_IDS", {}).keys())
+# Merge hardcoded + config blacklists (hardcoded always wins)
+_config_blacklist = _SCANNER_CONFIG.get("BLACKLISTED_CONDITION_IDS", {})
+BLACKLISTED_CONDITIONS = {**_config_blacklist, **_HARDCODED_BLACKLIST}
 COMMODITY_BUFFER_USD = float(_SCANNER_CONFIG.get("COMMODITY_BUFFER_USD", 5.0))
 
 PRIVATE_KEY = os.environ.get("POLYMARKET_PRIVATE_KEY","").strip()
