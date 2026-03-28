@@ -325,7 +325,7 @@ def apply_tweak(cfg, tweak):
 
     if param and new_val is not None:
         new_cfg[param] = new_val
-        new_cfg["version"] = str(int(cfg.get("version", 0)) + 1)
+        new_cfg["version"] = str(int(float(cfg.get("version", 0))) + 1)
         new_cfg["description"] = tweak.get("reasoning", "")[:100]
 
     return new_cfg
