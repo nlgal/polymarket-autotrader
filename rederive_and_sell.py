@@ -1,7 +1,12 @@
 """
-Deploy latest opportunity_scanner.py + scanner_config.json from GitHub to server.
+Deploy latest files from GitHub to server.
 Uses GitHub API (not CDN) to guarantee freshest commit, no cache lag.
 CDN (raw.githubusercontent.com) can lag 10-30min behind commits.
+
+Deploys:
+- opportunity_scanner.py
+- scanner_config.json  
+- strategy_optimizer.py
 """
 import requests, base64, json, os, glob
 
@@ -30,9 +35,18 @@ try:
 except Exception as e:
     print(f"Config deploy failed (non-critical): {e}")
 
+# Deploy strategy optimizer
+try:
+    optimizer, opt_sha = fetch_github_file("strategy_optimizer.py")
+    with open(f"{TARGET_DIR}/strategy_optimizer.py", "w") as f:
+        f.write(optimizer)
+    print(f"Optimizer deployed: {len(optimizer)} chars (sha={opt_sha})")
+except Exception as e:
+    print(f"Optimizer deploy failed (non-critical): {e}")
+
 # Clear pycache
 for pyc in glob.glob(f"{TARGET_DIR}/**/*.pyc", recursive=True):
-    if "opportunity_scanner" in pyc:
+    if "opportunity_scanner" in pyc or "strategy_optimizer" in pyc:
         try: os.remove(pyc)
         except: pass
 
