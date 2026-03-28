@@ -45,7 +45,16 @@ try:
 except Exception as e:
     print(f"Optimizer deploy failed: {e}")
 
-# 4. Deploy autotrader.py (CRITICAL — has blacklist + commodity check)
+# 4. Deploy HARD_RULES.md (agent guardrails — read before every trade decision)
+try:
+    hard_rules, hr_sha = fetch("HARD_RULES.md")
+    with open(f"{TARGET_DIR}/HARD_RULES.md", "w") as f:
+        f.write(hard_rules)
+    print(f"HARD_RULES deployed: {len(hard_rules)} chars (sha={hr_sha})")
+except Exception as e:
+    print(f"HARD_RULES deploy failed: {e}")
+
+# 5. Deploy autotrader.py (CRITICAL — has blacklist + commodity check)
 try:
     autotrader, at_sha = fetch("autotrader.py")
     with open(f"{TARGET_DIR}/autotrader.py", "w") as f:
