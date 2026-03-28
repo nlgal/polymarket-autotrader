@@ -432,7 +432,22 @@ def auto_dream():
     Keeps the AI's memory accurate and prevents stale context degradation.
     Called daily by the optimizer — like Claude Code's Auto Dream feature.
     """
-    log("=== Auto Dream: Regenerating CLAUDE.md ===")
+    log("=== Auto Dream: Regenerating CLAUDE.md + syncing HARD_RULES.md ===")
+    # Sync HARD_RULES.md from GitHub (keeps guardrails up to date)
+    try:
+        import base64 as _b64
+        _r = __import__("requests")
+        _resp = _r.get(
+            "https://api.github.com/repos/nlgal/polymarket-autotrader/contents/HARD_RULES.md",
+            headers={"Accept": "application/vnd.github.v3+json"}, timeout=15
+        )
+        if _resp.status_code == 200:
+            _hr = _b64.b64decode(_resp.json()["content"]).decode("utf-8")
+            with open(os.path.join("/opt/polymarket-agent", "HARD_RULES.md"), "w") as _f:
+                _f.write(_hr)
+            log(f"HARD_RULES.md synced ({len(_hr)} chars)")
+    except Exception as _e:
+        log(f"HARD_RULES.md sync skipped: {_e}")
 
     equity, positions = get_current_positions()
     news = get_latest_news()

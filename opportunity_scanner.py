@@ -362,10 +362,10 @@ def get_candidate_markets():
     return sorted(candidates, key=lambda x: x["volume24h"], reverse=True)[:25]
 
 def load_claude_md():
-    """Load CLAUDE.md + lessons.md for full trading context + mistake history."""
+    """Load CLAUDE.md + lessons.md + HARD_RULES.md for full trading context."""
     parts = []
     agent_dir = "/opt/polymarket-agent"
-    for fname, cap in [("CLAUDE.md", 1500), ("lessons.md", 1200)]:
+    for fname, cap in [("HARD_RULES.md", 2000), ("CLAUDE.md", 1500), ("lessons.md", 1200)]:
         fpath = os.path.join(agent_dir, fname)
         if os.path.exists(fpath):
             try:

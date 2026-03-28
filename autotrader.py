@@ -1442,11 +1442,13 @@ def score_market(market, mode="NORMAL"):
         except Exception:
             pass
 
-    soul    = load_soul()
-    lessons = load_lessons()
+    soul       = load_soul()
+    lessons    = load_lessons()
+    hard_rules = load_hard_rules()
     intel   = ""
-    if soul:    intel += "CORE PRINCIPLES:\n" + soul + "\n"
-    if lessons: intel += "LEARNED LESSONS:\n" + lessons + "\n"
+    if hard_rules: intel += "HARD RULES (read first — these override everything else):\n" + hard_rules + "\n\n"
+    if soul:       intel += "CORE PRINCIPLES:\n" + soul + "\n"
+    if lessons:    intel += "LEARNED LESSONS:\n" + lessons + "\n"
 
     # ── Unusual Whales signal injection ──────────────────────────────────────
     uw_cache = fetch_uw_signals()
