@@ -1354,6 +1354,57 @@ def score_market(market, mode="NORMAL"):
         return {**market, "action": "PASS", "edge": 0, "confidence": "low",
                 "reasoning": "Blacklisted market type — no model edge"}
 
+    # ── CONDITION ID BLACKLIST — never trade these markets again ──────────────
+    # Lessons 9, 10, 11: crude oil at trigger, BTC near trigger → blocked permanently
+    _AUTOTRADER_BLACKLIST = {
+        "0xc5300759dc2089042380795fe7384010a6b6ebdf9e6da7ed3f786d9a5f61c563":
+            "Lesson 9+10: Crude Oil $100 HIGH — bought NO 4x when WTI was at trigger",
+        "0x36912c9832f0fd104d734b579fb9b3a1b31bbdc946a67356723407e3bdc96dbc":
+            "Lesson 11: BTC $65k dip NO — bought when BTC was 1.8% above trigger",
+        "0x4290a4aa43a0707f0f1193c73667074f2ef5ce8ab5d6fcdd4ca645bfe1528f03":
+            "Lesson 11: BTC $60k dip YES — needs 10% drop in 4 days",
+    }
+    _mkt_condition = market.get("condition_id", market.get("conditionId", ""))
+    if _mkt_condition in _AUTOTRADER_BLACKLIST:
+        reason = _AUTOTRADER_BLACKLIST[_mkt_condition]
+        log(f"  [BLACKLISTED] {market.get('question','')[:55]} — {reason[:50]}", Fore.RED)
+        return {**market, "action": "PASS", "edge": 0, "confidence": "low",
+                "reasoning": f"BLACKLISTED: {reason}"}
+
+    # ── COMMODITY PRICE REALITY CHECK — no trading near the trigger ────────────
+    def _get_live_price(symbol):
+        try:
+            import requests as _r
+            rv = _r.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d",
+                timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+            return float(rv.json()["chart"]["result"][0]["meta"]["regularMarketPrice"])
+        except: return None
+
+    _q_lower = (market.get("question", "") + " " + market.get("title", "")).lower()
+    import re as _re2
+
+    if ("crude oil" in _q_lower or "wti" in _q_lower or "cl)" in _q_lower) and "high" in _q_lower:
+        _targets = _re2.findall(r"\$([0-9,]+)", market.get("question", ""))
+        if _targets:
+            _target = float(_targets[0].replace(",", ""))
+            _wti = _get_live_price("CL=F")
+            if _wti is not None and abs(_wti - _target) <= 5.0:
+                log(f"  [COMMODITY BLOCK] WTI ${_wti:.2f} within $5 of ${_target:.0f} — skip", Fore.YELLOW)
+                return {**market, "action": "PASS", "edge": 0, "confidence": "low",
+                        "reasoning": f"WTI ${_wti:.2f} within $5 of ${_target:.0f} trigger — no edge"}
+
+    if ("bitcoin" in _q_lower or "btc" in _q_lower) and ("dip" in _q_lower or "low" in _q_lower):
+        _targets = _re2.findall(r"\$([0-9,]+)", market.get("question", ""))
+        if _targets:
+            _target = float(_targets[0].replace(",", ""))
+            _btc = _get_live_price("BTC-USD")
+            if _btc is not None:
+                _gap_pct = (_btc - _target) / _target
+                if abs(_gap_pct) <= 0.05:
+                    log(f"  [COMMODITY BLOCK] BTC ${_btc:,.0f} within 5% of ${_target:,.0f} — skip", Fore.YELLOW)
+                    return {**market, "action": "PASS", "edge": 0, "confidence": "low",
+                            "reasoning": f"BTC ${_btc:,.0f} within 5% of ${_target:,.0f} trigger — no edge"}
+
     # Category whitelist: only score markets in approved categories.
     # Sports are exempt here — they go through the sports policy gate separately.
     q_full = market.get("question", "") + " " + market.get("title", "")
