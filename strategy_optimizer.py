@@ -644,7 +644,7 @@ Score: {current_score:.1f} → {new_score:.1f} (+{new_score - current_score:.1f}
         log(f"No improvement ({new_score:.1f} ≤ {current_score:.1f}) — keeping current config")
         history.append({
             "timestamp": datetime.datetime.utcnow().isoformat(),
-            "version": cfg["version"],
+            "version": cfg.get("version", "1.0"),
             "score": current_score,
             "delta": 0,
             "tweak": {"rejected": tweak},
