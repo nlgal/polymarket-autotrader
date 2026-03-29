@@ -26,7 +26,7 @@ FUNDER = os.environ['POLYMARKET_FUNDER_ADDRESS']  # Safe address
 SIGNER_ADDR = "0x7C67b2e2082Fa089E1B703aA248eE17B9E56bBF6"
 
 # Polygon RPC
-RPC = "https://polygon-rpc.com"
+RPC = "https://rpc.ankr.com/polygon"
 w3 = Web3(Web3.HTTPProvider(RPC))
 account: LocalAccount = Account.from_key(PRIVATE_KEY)
 print(f"Signer: {account.address}")
