@@ -382,7 +382,124 @@ _CLAUDE_MD_CONTEXT = load_claude_md()
 
 
 
+BULL_BEAR_THRESHOLD = 50   # Run full bull/bear debate on trades >= this size
 CONSENSUS_THRESHOLD = 30   # Only run consensus vote on trades >= this size
+
+BULL_BEAR_THRESHOLD = 50  # Only run full bull/bear debate on trades >= this size
+
+def claude_call(prompt, max_tokens=300):
+    """Raw Claude Haiku call. Returns text or empty string on error."""
+    if not ANTHROPIC_KEY:
+        return ""
+    try:
+        resp = requests.post("https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5", "max_tokens": max_tokens,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=20)
+        if resp.status_code == 200:
+            return resp.json().get("content", [{}])[0].get("text", "")
+    except:
+        pass
+    return ""
+
+def bull_bear_debate(question, yes_p, description, news_snippets, uw_summary=""):
+    """
+    3-step adversarial deliberation before a trade.
+    
+    Step 1: Bull agent — argue the strongest case FOR buying this side
+    Step 2: Bear agent — argue the strongest case AGAINST, poke holes in bull
+    Step 3: Risk manager — reads both, makes final BUY/PASS decision with sizing
+    
+    Returns (action, edge, reasoning) same interface as score_with_claude.
+    Falls back to score_with_claude on any error.
+    """
+    import concurrent.futures
+
+    uw_note = f"\nUW SIGNAL: {uw_summary}" if uw_summary else ""
+    market_ctx = f"""MARKET: {question}
+YES PRICE: {yes_p:.2f} ({yes_p*100:.0f}% probability)
+DESCRIPTION: {description[:250]}
+NEWS: {news_snippets[:500]}{uw_note}"""
+
+    # Step 1 + 2: Bull and Bear argue in parallel
+    bull_prompt = f"""You are the BULL analyst at a prediction market trading desk.
+Your job: argue the STRONGEST possible case for why this market is MISPRICED and we should trade it.
+Find the best edge. Be aggressive and specific.
+
+{market_ctx}
+
+Give your bull case in 2-3 sentences. Focus on: why the market is wrong, what the crowd is missing, what the true probability is."""
+
+    bear_prompt = f"""You are the BEAR analyst at a prediction market trading desk.
+Your job: argue the STRONGEST possible case for why we should NOT trade this market.
+Find every risk, every reason the current price might be correct or we might lose.
+
+{market_ctx}
+
+Give your bear case in 2-3 sentences. Focus on: tail risks, reasons the current price is fair, what could go wrong."""
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        f_bull = ex.submit(claude_call, bull_prompt, 200)
+        f_bear = ex.submit(claude_call, bear_prompt, 200)
+
+    bull_case = f_bull.result()
+    bear_case = f_bear.result()
+
+    if not bull_case or not bear_case:
+        log("  [Bull/Bear] Fallback to single Claude (API error)")
+        return score_with_claude(question, yes_p, description, news_snippets, uw_summary)
+
+    log(f"  [Bull] {bull_case[:100]}")
+    log(f"  [Bear] {bear_case[:100]}")
+
+    # Step 3: Risk manager reads the debate and decides
+    risk_prompt = f"""You are the RISK MANAGER at a prediction market trading desk.
+Two analysts have debated this market. You make the final call.
+
+{market_ctx}
+
+BULL ANALYST SAYS:
+{bull_case}
+
+BEAR ANALYST SAYS:
+{bear_case}
+
+Your job: weigh both arguments and decide if there is a genuine edge worth trading.
+Be conservative — only approve if the bull case clearly outweighs the bear case.
+
+Respond ONLY with JSON:
+{{"true_probability": 0.XX, "action": "BUY_YES"|"BUY_NO"|"PASS", "edge": 0.XX, "reasoning": "one sentence verdict", "bull_wins": true|false}}
+
+Rules:
+- action=BUY_YES if true_prob > yes_p+0.12, BUY_NO if true_prob < yes_p-0.12, else PASS
+- If bull and bear are roughly equal → PASS (no edge)
+- Only trade if the edge is real and the bull case is specific and factual
+- For sports markets without UW signal → PASS"""
+
+    verdict_text = claude_call(risk_prompt, 300)
+    if not verdict_text:
+        log("  [Bull/Bear] Risk manager failed — fallback")
+        return score_with_claude(question, yes_p, description, news_snippets, uw_summary)
+
+    try:
+        match = re.search(r'\{[^{}]*"action"[^{}]*\}', verdict_text, re.DOTALL)
+        if not match:
+            match = re.search(r'\{.*?\}', verdict_text, re.DOTALL)
+        if match:
+            result = json.loads(match.group())
+            action    = result.get("action", "PASS")
+            edge      = float(result.get("edge", 0))
+            reasoning = result.get("reasoning", "")
+            bull_wins = result.get("bull_wins", False)
+            log(f"  [Risk Manager] {action} (edge={edge:.2f}, bull_wins={bull_wins}): {reasoning[:80]}")
+            return action, edge, f"[bull/bear] {reasoning}"
+    except Exception as e:
+        log(f"  [Bull/Bear] Parse error: {e}")
+
+    return score_with_claude(question, yes_p, description, news_snippets, uw_summary)
+
 
 def ask_perplexity(prompt):
     """Ask Perplexity sonar-small for a trade signal. Returns (action, edge, reasoning)."""
@@ -780,10 +897,15 @@ def main():
         # Get news
         snippets = fetch_news_snippets(q)
         
-        # Score with Claude (+ Perplexity consensus for larger trades)
+        # Tiered scoring:
+        #   >= $50: full bull/bear debate (3 Claude calls, adversarial)
+        #   >= $30: consensus vote (Claude + Perplexity in parallel)
+        #   <  $30: single Claude call
         projected_size = min(MAX_TRADE_SIZE, cash_remaining * 0.3)
         projected_size = max(MIN_TRADE_SIZE, projected_size)
-        if projected_size >= CONSENSUS_THRESHOLD and PERPLEXITY_KEY:
+        if projected_size >= BULL_BEAR_THRESHOLD:
+            action, edge, reasoning = bull_bear_debate(q, yes_p, mkt["description"], snippets, uw_summary_text)
+        elif projected_size >= CONSENSUS_THRESHOLD and PERPLEXITY_KEY:
             action, edge, reasoning, _votes = consensus_vote(q, yes_p, mkt["description"], snippets, uw_summary_text)
         else:
             action, edge, reasoning = score_with_claude(q, yes_p, mkt["description"], snippets, uw_summary_text)
