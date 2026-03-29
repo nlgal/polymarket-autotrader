@@ -27,6 +27,8 @@ WATCHLIST_FILE = '/opt/polymarket-agent/whale_watchlist.json'
 MIN_PNL        = 100_000   # At least $100k all-time profit
 MIN_PNL_RATIO  = 0.10      # At least 10% profit on volume (efficiency filter)
 MAX_WATCHLIST  = 20        # Keep top 20 wallets
+ACTIVITY_WINDOW_DAYS = 14  # Must have traded in last 14 days (was 30 — tighter for freshness)
+STALE_DAYS     = 21        # Remove from watchlist if no trades for 21 days
 
 def tg(msg):
     if TG_TOKEN and TG_CHAT:
@@ -85,10 +87,10 @@ def score_wallet(entry):
     if pnl_ratio < MIN_PNL_RATIO:
         return None
 
-    # Check recency — must have traded in last 30 days
+    # Check recency — must have traded in last ACTIVITY_WINDOW_DAYS days
     last_ts = get_last_activity(wallet)
     days_ago = (time.time() - last_ts) / 86400 if last_ts else 999
-    if days_ago > 30:
+    if days_ago > ACTIVITY_WINDOW_DAYS:
         return None
 
     # Composite score: weight PnL heavily, bonus for efficiency
@@ -135,14 +137,38 @@ def main():
 
     # Sort by composite score and take top N
     candidates.sort(key=lambda x: x['score'], reverse=True)
-    watchlist = candidates[:MAX_WATCHLIST]
+    new_wallets = candidates[:MAX_WATCHLIST]
 
-    log(f'\nFound {len(candidates)} qualifying wallets → keeping top {len(watchlist)}')
+    # ── Smart merge: preserve last_seen state, drop stale wallets ─────────
+    existing_last_seen = {}
+    try:
+        with open(WATCHLIST_FILE) as f:
+            old_data = json.load(f)
+            for w in old_data.get('wallets', []):
+                existing_last_seen[w['wallet']] = w.get('last_seen', {})
+    except:
+        pass
+
+    # Restore last_seen timestamps for wallets that carried over
+    for w in new_wallets:
+        if w['wallet'] in existing_last_seen:
+            w['last_seen'] = existing_last_seen[w['wallet']]
+
+    watchlist = new_wallets
+    dropped = [a[:10] for a in existing_last_seen if a not in {w['wallet'] for w in watchlist}]
+
+    log(f'\nFound {len(candidates)} qualifying → keeping top {len(watchlist)}')
+    if dropped:
+        log(f'Rotated out (stale/dropped rank): {dropped}')
 
     # Save watchlist
     with open(WATCHLIST_FILE, 'w') as f:
-        json.dump({'updated_at': datetime.datetime.utcnow().isoformat(),
-                   'wallets': watchlist}, f, indent=2)
+        json.dump({
+            'updated_at': datetime.datetime.utcnow().isoformat(),
+            'criteria': {'min_pnl': MIN_PNL, 'min_pnl_ratio': MIN_PNL_RATIO,
+                         'activity_window_days': ACTIVITY_WINDOW_DAYS},
+            'wallets': watchlist
+        }, f, indent=2)
 
     log(f'Watchlist saved to {WATCHLIST_FILE}')
 
