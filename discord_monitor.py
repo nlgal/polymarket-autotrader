@@ -76,6 +76,22 @@ def fetch_messages(channel_id, limit=20):
     )
     if r.status_code == 200:
         return r.json()
+    if r.status_code in (401, 403):
+        # Token expired or invalid — alert user with refresh instructions
+        tg(
+            '<b>⚠️ Discord token expired</b>\n'
+            'The dkxbt call monitor has stopped working.\n\n'
+            '<b>To refresh the token:</b>\n'
+            '1. Open discord.com in Chrome\n'
+            '2. Press F12 to open DevTools\n'
+            '3. Click the <b>Console</b> tab\n'
+            '4. Paste this and press Enter:\n'
+            '<code>window.webpackChunkdiscord_app.push([[Math.random()],{},e=>{Object.keys(e.c).forEach(k=>{const m=e.c[k]?.exports;if(m?.default?.getToken)console.log(m.default.getToken())})}])</code>\n'
+            '5. Copy the token that appears\n'
+            '6. Send it to Computer to update'
+        )
+        log(f'TOKEN EXPIRED (HTTP {r.status_code}) — Telegram alert sent')
+        return None  # None signals token failure to caller
     log(f'Discord API {r.status_code} on channel {channel_id}')
     return []
 
@@ -114,6 +130,10 @@ def main():
     for channel_name, channel_id in CHANNELS.items():
         log(f'Checking #{channel_name}...')
         messages = fetch_messages(channel_id, limit=20)
+        if messages is None:
+            log('Token expired — aborting run')
+            save_state(state)
+            return
         if not messages:
             continue
 
