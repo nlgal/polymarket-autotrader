@@ -123,6 +123,7 @@ ALLOWED_SCRIPTS = {
     "sell_crude_no.py",
     "run_optimizer_now.py",
     "patch_scanner_claudemd.py",
+    "live_sports_trader.py",
 }
 
 
