@@ -97,11 +97,15 @@ try:
 except Exception as e:
     print(f"Executor deploy failed: {e}")
 
-# 8. Clear pycache
+# 8. Clear ALL pycache — prevents stale bytecode from overriding fixes
+import shutil
 for pyc in glob.glob(f"{TARGET_DIR}/**/*.pyc", recursive=True):
-    if any(x in pyc for x in ["opportunity_scanner","autotrader","strategy_optimizer","live_sports_trader"]):
-        try: os.remove(pyc)
-        except: pass
+    try: os.remove(pyc)
+    except: pass
+for cache_dir in glob.glob(f"{TARGET_DIR}/**/__pycache__", recursive=True):
+    try: shutil.rmtree(cache_dir)
+    except: pass
+print("pycache cleared")
 
 # Verify scanner fix
 has_fix = "COMMODITY_BUFFER_USD" in scanner and "BLACKLISTED_CONDITIONS" in scanner
