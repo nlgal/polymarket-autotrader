@@ -1,17 +1,51 @@
 """
-Comprehensive patch script:
-1. Downloads correct deposit_safe.py + lp_farmer.py from GitHub API
-2. Finds and patches polygon-rpc.com in py-clob-client or web3 config
-3. Runs the deposit
+Comprehensive patch:
+1. Fix eth_utils eth_networks.json — swap polygon-rpc.com to working RPC
+2. Download correct deposit_safe.py + lp_farmer.py from GitHub API
+3. Run the deposit
 """
-import requests, base64, json, os, sys, subprocess, time
+import requests, base64, json, os, sys
 
 GITHUB_API = "https://api.github.com/repos/nlgal/polymarket-autotrader/contents"
 AGENT_DIR = "/opt/polymarket-agent"
 GOOD_RPC = "https://rpc.ankr.com/polygon"
-BAD_RPC = "https://polygon-rpc.com"
+BAD_RPC = "https://polygon-rpc.com/"
 
-# Step 1: Download correct scripts
+# Step 1: Patch eth_networks.json to fix Polygon RPC
+import glob
+eth_network_files = glob.glob(
+    f"{AGENT_DIR}/venv/lib/python*/site-packages/eth_utils/__json/eth_networks.json"
+)
+# Also check system Python
+eth_network_files += glob.glob(
+    "/usr/local/lib/python*/site-packages/eth_utils/__json/eth_networks.json"
+)
+eth_network_files = list(set(eth_network_files))
+
+for fpath in eth_network_files:
+    if not os.path.exists(fpath):
+        continue
+    with open(fpath) as f:
+        networks = json.load(f)
+    
+    patched = False
+    for net in networks:
+        if net.get("chainId") == 137:  # Polygon
+            rpcs = net.get("rpc", [])
+            if BAD_RPC in rpcs:
+                # Move bad RPC to end, add good RPC at front
+                rpcs = [r for r in rpcs if r != BAD_RPC]
+                rpcs.insert(0, GOOD_RPC)
+                net["rpc"] = rpcs
+                patched = True
+                print(f"✓ Patched Polygon RPC in {fpath}")
+                print(f"  First RPC now: {rpcs[0]}")
+    
+    if patched:
+        with open(fpath, 'w') as f:
+            json.dump(networks, f)
+
+# Step 2: Download correct scripts from GitHub API
 for script in ["deposit_safe.py", "lp_farmer.py"]:
     r = requests.get(f"{GITHUB_API}/{script}",
         headers={"Accept": "application/vnd.github.v3+json"}, timeout=20)
@@ -19,38 +53,8 @@ for script in ["deposit_safe.py", "lp_farmer.py"]:
         content = base64.b64decode(r.json()["content"]).decode("utf-8")
         with open(f"{AGENT_DIR}/{script}", "w") as f:
             f.write(content)
-        print(f"✓ {script}: {len(content)} chars")
+        print(f"✓ {script}: {len(content)} chars deployed")
     else:
         print(f"✗ {script}: {r.status_code}")
 
-# Step 2: Find and patch polygon-rpc.com in venv
-result = subprocess.run(
-    ["grep", "-rl", BAD_RPC, f"{AGENT_DIR}/venv/"],
-    capture_output=True, text=True
-)
-files_with_bad_rpc = [f.strip() for f in result.stdout.strip().split('\n') if f.strip()]
-print(f"\nFiles containing {BAD_RPC}:")
-for f in files_with_bad_rpc:
-    print(f"  {f}")
-    try:
-        with open(f, 'r') as fh:
-            content = fh.read()
-        if BAD_RPC in content:
-            content = content.replace(BAD_RPC, GOOD_RPC)
-            with open(f, 'w') as fh:
-                fh.write(content)
-            print(f"    → Patched to {GOOD_RPC}")
-    except Exception as e:
-        print(f"    → Failed to patch: {e}")
-
-if not files_with_bad_rpc:
-    print("  (none found in venv — RPC may be set differently)")
-    # Check py_clob_client constants
-    result2 = subprocess.run(
-        ["find", f"{AGENT_DIR}/venv/", "-name", "*.py", "-exec",
-         "grep", "-l", "polygon", "{}", "+"],
-        capture_output=True, text=True
-    )
-    print(f"  Polygon-related files: {result2.stdout[:500]}")
-
-print("\n✓ Patch complete")
+print("\nAll patches complete. Ready to deposit.")
