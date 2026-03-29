@@ -2208,23 +2208,41 @@ def check_thesis_invalidation(client):
         if cur_val < THESIS_MIN_VALUE:
             continue
 
-        token_id = p.get("asset", "")
-        title    = p.get("title", "")
-        outcome  = p.get("outcome", "")  # "Yes" or "No"
-        avg_p    = float(p.get("avgPrice", 0) or 0)
-        size     = float(p.get("size", 0) or 0)
+        token_id     = p.get("asset", "")
+        condition_id = p.get("conditionId", p.get("condition_id", ""))
+        title        = p.get("title", "")
+        outcome      = p.get("outcome", "")  # "Yes" or "No"
+        avg_p        = float(p.get("avgPrice", 0) or 0)
+        size         = float(p.get("size", 0) or 0)
 
-        # Skip sports game markets — they resolve on live game outcome,
-        # not on a thesis that can be invalidated by news.
-        # Thesis checker would sell Clippers @ 92c because "thesis achieved"
-        # but that's not a thesis — it's just the game being in progress.
+        # ── HARD SKIP 1: Condition ID blacklist ────────────────────────────
+        # Any market in this list is NEVER thesis-checked. Permanent.
+        _THESIS_BLACKLIST = {
+            "0x87254ca39f82f1fdef981066710fb49904e86358bcf1ed9a4e05e4558d665329",  # Duke vs UConn
+            "0xb54b0241f4f33e6734a29df5d59e0b4fbb7b96cf92d2c7151622cdb294c94516",  # Clippers vs Bucks ML
+        }
+        if condition_id in _THESIS_BLACKLIST:
+            log(f"[THESIS] {title[:45]} — condition ID blacklisted, skip", Fore.MAGENTA)
+            continue
+
+        # ── HARD SKIP 2: Sports game markets ──────────────────────────────
+        # These resolve on live score, not thesis validity.
+        # High price (90c+) during a game = team is WINNING, not thesis complete.
+        # NEVER sell these — let them resolve naturally.
         _SPORTS_GAME_KEYWORDS = [
-            " vs. ", " vs ", "clippers", "bucks", "celtics", "lakers",
-            "spread:", "moneyline", "over/under", "miami open", "atp ",
-            "wta ", "tennessee", "duke", "michigan", "uconn", "ncaa",
+            " vs. ", " vs ", "spread:", "o/u ", "over/under",
+            "moneyline", " ml ",
+            # Team names
+            "clippers", "bucks", "celtics", "lakers", "heat", "nuggets",
+            "thunder", "spurs", "knicks", "pistons", "warriors", "nets",
+            "duke", "uconn", "michigan", "tennessee", "kansas", "kentucky",
+            "connecticut huskies", "blue devils",
+            # Sports leagues / events
+            "ncaa", "nba ", "nhl ", "nfl ", "mlb ",
+            "atp ", "wta ", "miami open", "french open", "wimbledon",
         ]
         if any(kw in title.lower() for kw in _SPORTS_GAME_KEYWORDS):
-            log(f"[THESIS] {title[:45]} — sports game market, skip thesis check", Fore.MAGENTA)
+            log(f"[THESIS] {title[:45]} — sports game market, skip", Fore.MAGENTA)
             continue
 
         # Grace period: never thesis-exit a position bought in last 4 hours.
