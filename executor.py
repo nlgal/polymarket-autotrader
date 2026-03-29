@@ -145,6 +145,7 @@ ALLOWED_SCRIPTS = {
     "place_clippers_lac.py",
     "auto_redeem.py",
     "patch_auto_redeem.py",
+    "clear_redeem_cache.py",
 }
 
 
