@@ -75,6 +75,15 @@ COMMANDS = {
         f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/weather_scout.py "
         f"-o {AGENT_DIR}/weather_scout.py && echo OK"
     ),
+    "deploy_sports_trader": (
+        f"curl -s 'https://api.github.com/repos/nlgal/polymarket-autotrader/contents/live_sports_trader.py' "
+        f"-H 'Accept: application/vnd.github.v3.raw' "
+        f"-o {AGENT_DIR}/live_sports_trader.py && "
+        f"curl -s 'https://api.github.com/repos/nlgal/polymarket-autotrader/contents/rederive_and_sell.py' "
+        f"-H 'Accept: application/vnd.github.v3.raw' "
+        f"-o {AGENT_DIR}/rederive_and_sell.py && "
+        f"echo 'sports_trader+rederive deployed'"
+    ),
     "deploy_all": (
         f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/autotrader.py "
         f"-o {AGENT_DIR}/autotrader.py && "
