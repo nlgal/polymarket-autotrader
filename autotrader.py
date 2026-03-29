@@ -2212,6 +2212,19 @@ def check_thesis_invalidation(client):
         avg_p    = float(p.get("avgPrice", 0) or 0)
         size     = float(p.get("size", 0) or 0)
 
+        # Skip sports game markets — they resolve on live game outcome,
+        # not on a thesis that can be invalidated by news.
+        # Thesis checker would sell Clippers @ 92c because "thesis achieved"
+        # but that's not a thesis — it's just the game being in progress.
+        _SPORTS_GAME_KEYWORDS = [
+            " vs. ", " vs ", "clippers", "bucks", "celtics", "lakers",
+            "spread:", "moneyline", "over/under", "miami open", "atp ",
+            "wta ", "tennessee", "duke", "michigan", "uconn", "ncaa",
+        ]
+        if any(kw in title.lower() for kw in _SPORTS_GAME_KEYWORDS):
+            log(f"[THESIS] {title[:45]} — sports game market, skip thesis check", Fore.MAGENTA)
+            continue
+
         # Grace period: never thesis-exit a position bought in last 4 hours.
         # This prevents buy-then-sell churn when service restarts and cache is cold.
         # Record "first_seen" the moment we first encounter this token_id.
