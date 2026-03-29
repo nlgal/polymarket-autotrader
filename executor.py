@@ -146,6 +146,7 @@ ALLOWED_SCRIPTS = {
     "auto_redeem.py",
     "whale_monitor.py",
     "check_whale.py",
+    "bootstrap_whale.py",
     "whale_scanner.py",
     "patch_auto_redeem.py",
     "clear_redeem_cache.py",
