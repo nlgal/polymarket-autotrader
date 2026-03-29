@@ -134,6 +134,7 @@ ALLOWED_SCRIPTS = {
     "patch_scanner_claudemd.py",
     "live_sports_trader.py",
     "discord_monitor.py",
+    "patch_discord_env.py",
 }
 
 

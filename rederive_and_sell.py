@@ -108,3 +108,25 @@ has_fix = "COMMODITY_BUFFER_USD" in scanner and "BLACKLISTED_CONDITIONS" in scan
 old_bug = "yes_p < 0.5 and wti >= target * 0.99" in scanner
 print(f"Scanner deployed: {len(scanner)} chars (sha={sha}, via GitHub API)")
 print(f"Fix verified: commodity_check={has_fix}, old_bug_gone={not old_bug}")
+
+# 9. Deploy discord_monitor.py
+try:
+    discord_mon, dm_sha = fetch("discord_monitor.py")
+    with open(f"{TARGET_DIR}/discord_monitor.py", "w") as f:
+        f.write(discord_mon)
+    print(f"Discord monitor deployed: {len(discord_mon)} chars (sha={dm_sha})")
+except Exception as e:
+    print(f"Discord monitor deploy failed: {e}")
+
+# 10. Ensure DISCORD_TOKEN is in .env (add if missing)
+try:
+    env_path = f"{TARGET_DIR}/.env"
+    with open(env_path) as f:
+        env_content = f.read()
+    if "DISCORD_TOKEN=" not in env_content:
+        # Token will be injected by patch script on first run
+        print("DISCORD_TOKEN: not yet in .env (run patch_discord_env.py to add)")
+    else:
+        print("DISCORD_TOKEN: already in .env ✓")
+except Exception as e:
+    print(f".env check failed: {e}")
