@@ -24,16 +24,7 @@ from dotenv import load_dotenv
 load_dotenv('/opt/polymarket-agent/.env')
 
 from web3 import Web3
-try:
-    from web3.middleware import geth_poa_middleware as _poa_mw
-    _POA_V6 = False
-except ImportError:
-    try:
-        from web3.middleware import ExtraDataToPOAMiddleware as _poa_mw
-        _POA_V6 = True
-    except ImportError:
-        _poa_mw = None
-        _POA_V6 = False
+_poa_mw = None  # POA middleware not required on Polygon for read/write ops
 
 PRIVATE_KEY = os.environ['POLYMARKET_PRIVATE_KEY']
 FUNDER      = os.environ['POLYMARKET_FUNDER_ADDRESS']
