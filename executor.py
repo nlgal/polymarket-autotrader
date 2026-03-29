@@ -142,6 +142,7 @@ ALLOWED_SCRIPTS = {
     "discord_monitor.py",
     "patch_discord_env.py",
     "inject_discord_env.py",
+    "place_clippers_lac.py",
 }
 
 
