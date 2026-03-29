@@ -88,7 +88,7 @@ COMMANDS = {
         f"curl -s 'https://api.github.com/repos/nlgal/polymarket-autotrader/contents/inject_discord_env.py' "
         f"-H 'Accept: application/vnd.github.v3.raw' "
         f"-o {AGENT_DIR}/inject_discord_env.py && "
-        f"curl -s 'https://api.github.com/repos/nlgal/polymarket-autotrader/contents/auto_redeem.py' -H 'Accept: application/vnd.github.v3.raw' -o /opt/polymarket-agent/auto_redeem.py && echo 'sports+discord+inject+autredeem deployed'"
+        f"curl -s 'https://api.github.com/repos/nlgal/polymarket-autotrader/contents/auto_redeem.py' -H 'Accept: application/vnd.github.v3.raw' -o /opt/polymarket-agent/auto_redeem.py && curl -s 'https://api.github.com/repos/nlgal/polymarket-autotrader/contents/whale_scanner.py' -H 'Accept: application/vnd.github.v3.raw' -o /opt/polymarket-agent/whale_scanner.py && curl -s 'https://api.github.com/repos/nlgal/polymarket-autotrader/contents/whale_monitor.py' -H 'Accept: application/vnd.github.v3.raw' -o /opt/polymarket-agent/whale_monitor.py && echo 'all scripts deployed'"
     ),
     "deploy_all": (
         f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/autotrader.py "
@@ -144,6 +144,8 @@ ALLOWED_SCRIPTS = {
     "inject_discord_env.py",
     "place_clippers_lac.py",
     "auto_redeem.py",
+    "whale_monitor.py",
+    "whale_scanner.py",
     "patch_auto_redeem.py",
     "clear_redeem_cache.py",
     "diag_auto_redeem.py",
