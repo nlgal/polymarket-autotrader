@@ -52,8 +52,9 @@ PRIVATE_KEY = os.environ.get("POLYMARKET_PRIVATE_KEY","").strip()
 FUNDER      = os.environ.get("POLYMARKET_FUNDER_ADDRESS","").strip()
 TG_TOKEN    = os.environ.get("TELEGRAM_TOKEN","").strip()
 TG_CHAT     = os.environ.get("TELEGRAM_CHAT_ID","").strip()
-ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY","").strip()
-UW_API_KEY    = os.environ.get("UW_API_KEY","").strip()
+ANTHROPIC_KEY   = os.environ.get("ANTHROPIC_API_KEY","").strip()
+PERPLEXITY_KEY  = os.environ.get("PERPLEXITY_API_KEY","").strip()
+UW_API_KEY       = os.environ.get("UW_API_KEY","").strip()
 UW_BASE       = "https://api.unusualwhales.com"
 
 MIN_SCAN_EDGE    = 0.15   # Raised from 0.12 — only very high conviction trades's 0.07 — only obvious mispricings
@@ -379,6 +380,79 @@ def load_claude_md():
 # Cache CLAUDE.md at module load time (read once per scan run)
 _CLAUDE_MD_CONTEXT = load_claude_md()
 
+
+
+CONSENSUS_THRESHOLD = 30   # Only run consensus vote on trades >= this size
+
+def ask_perplexity(prompt):
+    """Ask Perplexity sonar-small for a trade signal. Returns (action, edge, reasoning)."""
+    if not PERPLEXITY_KEY:
+        return None, 0, "no key"
+    try:
+        resp = requests.post("https://api.perplexity.ai/chat/completions",
+            headers={"Authorization": f"Bearer {PERPLEXITY_KEY}", "Content-Type": "application/json"},
+            json={"model": "sonar", "max_tokens": 200,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=15)
+        text = resp.json()["choices"][0]["message"]["content"]
+        match = re.search(r'\{[^{}]*"action"[^{}]*\}', text, re.DOTALL)
+        if match:
+            result = json.loads(match.group())
+            return result.get("action","PASS"), float(result.get("edge",0)), result.get("reasoning","")
+    except Exception as e:
+        pass
+    return None, 0, "perplexity err"
+
+def consensus_vote(question, yes_p, description, news_snippets, uw_summary=""):
+    """
+    Poll Claude + Perplexity in parallel. 
+    Returns (action, edge, reasoning, votes_detail).
+    
+    Rules:
+    - Both must agree on same action (BUY_YES or BUY_NO) → use that action
+    - Disagreement or either returns PASS → return PASS
+    - If Perplexity unavailable → fall back to Claude only
+    """
+    import concurrent.futures
+
+    # Build a compact version of the Claude prompt for Perplexity too
+    uw_section = f"\nUW SIGNAL: {uw_summary}" if uw_summary else ""
+    shared_prompt = f"""You are a prediction market analyst. Evaluate this market:
+
+MARKET: {question}
+YES PRICE: {yes_p:.2f} ({yes_p*100:.0f}% implied probability)
+DESCRIPTION: {description[:300]}
+NEWS: {news_snippets[:600]}{uw_section}
+
+Respond ONLY with JSON:
+{{"true_probability": 0.XX, "action": "BUY_YES"|"BUY_NO"|"PASS", "edge": 0.XX, "reasoning": "one sentence"}}
+
+Rules: action=BUY_YES if true_prob > yes_p+0.12, BUY_NO if true_prob < yes_p-0.12, else PASS. Be conservative."""
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        f_claude = ex.submit(score_with_claude, question, yes_p, description, news_snippets, uw_summary)
+        f_perp   = ex.submit(ask_perplexity, shared_prompt)
+
+    c_action, c_edge, c_reason = f_claude.result()
+    p_action, p_edge, p_reason = f_perp.result()
+
+    votes = {"claude": c_action, "perplexity": p_action}
+    log(f"  [Consensus] Claude={c_action}({c_edge:.2f}) | Perplexity={p_action}({p_edge:.2f})")
+
+    # If Perplexity unavailable, fall back to Claude alone
+    if p_action is None:
+        log("  [Consensus] Perplexity unavailable — using Claude only")
+        return c_action, c_edge, c_reason, votes
+
+    # Both agree on a trade action
+    if c_action == p_action and c_action != "PASS":
+        avg_edge = (c_edge + p_edge) / 2
+        log(f"  [Consensus] ✓ AGREEMENT: {c_action} (avg edge {avg_edge:.2f})")
+        return c_action, avg_edge, f"[2/2 agree] {c_reason}", votes
+
+    # Disagreement or both PASS
+    log(f"  [Consensus] ✗ No agreement — PASS")
+    return "PASS", 0, f"[no consensus] claude={c_action} perp={p_action}", votes
 
 def score_with_claude(question, yes_p, description, news_snippets, uw_summary=""):
     """Use Claude to score the edge given fresh news and persistent trading context."""
@@ -706,8 +780,13 @@ def main():
         # Get news
         snippets = fetch_news_snippets(q)
         
-        # Score with Claude
-        action, edge, reasoning = score_with_claude(q, yes_p, mkt["description"], snippets, uw_summary_text)
+        # Score with Claude (+ Perplexity consensus for larger trades)
+        projected_size = min(MAX_TRADE_SIZE, cash_remaining * 0.3)
+        projected_size = max(MIN_TRADE_SIZE, projected_size)
+        if projected_size >= CONSENSUS_THRESHOLD and PERPLEXITY_KEY:
+            action, edge, reasoning, _votes = consensus_vote(q, yes_p, mkt["description"], snippets, uw_summary_text)
+        else:
+            action, edge, reasoning = score_with_claude(q, yes_p, mkt["description"], snippets, uw_summary_text)
         
         # Lower threshold when UW insider/whale signal present
         effective_threshold = MIN_SCAN_EDGE * (1 - UW_EDGE_DISCOUNT) if has_insider else MIN_SCAN_EDGE
