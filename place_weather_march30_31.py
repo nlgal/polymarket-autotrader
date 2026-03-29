@@ -8,11 +8,20 @@ import subprocess, requests, base64, json, time, os
 AGENT_DIR = "/opt/polymarket-agent"
 GITHUB_API = "https://api.github.com/repos/nlgal/polymarket-autotrader/contents"
 
+RAW_URL = "https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main"
+
 def fetch(path):
-    r = requests.get(f"{GITHUB_API}/{path}",
+    # Try raw CDN first (no rate limit), fall back to API
+    r = requests.get(f"{RAW_URL}/{path}", timeout=20)
+    if r.status_code == 200:
+        return r.text
+    # Fallback: GitHub API
+    r2 = requests.get(f"{GITHUB_API}/{path}",
         headers={"Accept": "application/vnd.github.v3+json"}, timeout=20)
-    data = r.json()
-    return base64.b64decode(data["content"]).decode("utf-8")
+    if r2.status_code == 200:
+        data = r2.json()
+        return base64.b64decode(data["content"]).decode("utf-8")
+    raise Exception(f"fetch failed: {path} CDN={r.status_code} API={r2.status_code}")
 
 print("=== Full Deploy + Executor Restart ===")
 
@@ -32,6 +41,20 @@ with open(f"{AGENT_DIR}/executor.py", "w") as f:
 print(f"  Deployed {len(executor)} chars")
 print(f"  sell_btc65k_no in whitelist: {'sell_btc65k_no' in executor}")
 print(f"  deploy_config in whitelist: {'deploy_config' in executor}")
+print(f"  whale_scanner in whitelist: {'whale_scanner' in executor}")
+print(f"  whale_monitor in whitelist: {'whale_monitor' in executor}")
+
+# 2b. Deploy whale scripts
+print("\n[2b] Deploying whale_scanner.py + whale_monitor.py...")
+for script in ["whale_scanner.py", "whale_monitor.py", "auto_redeem.py",
+               "discord_monitor.py", "inject_discord_env.py"]:
+    try:
+        content = fetch(script)
+        with open(f"{AGENT_DIR}/{script}", "w") as f:
+            f.write(content)
+        print(f"  {script}: {len(content)} chars")
+    except Exception as e:
+        print(f"  {script}: FAILED — {e}")
 
 # 3. Kill hanging processes and restart executor
 print("\n[3] Restarting executor service...")
