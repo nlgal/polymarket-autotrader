@@ -144,6 +144,7 @@ ALLOWED_SCRIPTS = {
     "inject_discord_env.py",
     "place_clippers_lac.py",
     "auto_redeem.py",
+    "patch_auto_redeem.py",
 }
 
 
