@@ -145,6 +145,7 @@ ALLOWED_SCRIPTS = {
     "place_clippers_lac.py",
     "auto_redeem.py",
     "whale_monitor.py",
+    "check_whale.py",
     "whale_scanner.py",
     "patch_auto_redeem.py",
     "clear_redeem_cache.py",
