@@ -106,7 +106,7 @@ def _set_cached_score(market, result):
 
 
 
-_INTEL_CACHE: dict = {"soul": None, "lessons": None}
+_INTEL_CACHE: dict = {"soul": None, "lessons": None, "hard_rules": None}
 
 def _read_intel_files():
     """Read soul.md + lessons.md from disk into cache. Call once per cycle."""
@@ -125,6 +125,18 @@ def _read_intel_files():
         _INTEL_CACHE["lessons"] = "\n".join(lines[:12])
     except Exception:
         _INTEL_CACHE["lessons"] = ""
+    try:
+        _hr_path = os.path.join(INTEL_DIR, "HARD_RULES.md")
+        _INTEL_CACHE["hard_rules"] = open(_hr_path).read()[:4000] if os.path.exists(_hr_path) else ""
+    except Exception:
+        _INTEL_CACHE["hard_rules"] = ""
+
+
+def load_hard_rules() -> str:
+    """Load HARD_RULES.md — machine-readable guardrails that override all signals."""
+    if _INTEL_CACHE["hard_rules"] is None: _read_intel_files()
+    return _INTEL_CACHE["hard_rules"] or ""
+
 
 def load_lessons() -> str:
     if _INTEL_CACHE["lessons"] is None: _read_intel_files()
