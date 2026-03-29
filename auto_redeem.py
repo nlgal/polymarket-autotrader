@@ -24,7 +24,16 @@ from dotenv import load_dotenv
 load_dotenv('/opt/polymarket-agent/.env')
 
 from web3 import Web3
-from web3.middleware import geth_poa_middleware
+try:
+    from web3.middleware import geth_poa_middleware as _poa_mw
+    _POA_V6 = False
+except ImportError:
+    try:
+        from web3.middleware import ExtraDataToPOAMiddleware as _poa_mw
+        _POA_V6 = True
+    except ImportError:
+        _poa_mw = None
+        _POA_V6 = False
 
 PRIVATE_KEY = os.environ['POLYMARKET_PRIVATE_KEY']
 FUNDER      = os.environ['POLYMARKET_FUNDER_ADDRESS']
@@ -185,7 +194,14 @@ def main():
 
     # Connect to Polygon
     w3 = Web3(Web3.HTTPProvider(RPC_URL))
-    w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+    if _poa_mw:
+        try:
+            if _POA_V6:
+                w3.middleware_onion.inject(_poa_mw(), layer=0)
+            else:
+                w3.middleware_onion.inject(_poa_mw, layer=0)
+        except Exception:
+            pass  # POA middleware optional on Polygon
     if not w3.is_connected():
         log('ERROR: Cannot connect to Polygon RPC')
         return
