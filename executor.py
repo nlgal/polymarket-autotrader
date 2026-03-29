@@ -146,6 +146,7 @@ ALLOWED_SCRIPTS = {
     "auto_redeem.py",
     "patch_auto_redeem.py",
     "clear_redeem_cache.py",
+    "diag_auto_redeem.py",
 }
 
 
