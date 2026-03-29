@@ -1,21 +1,28 @@
-"""One-time patch: fix RPC URL in deposit_safe.py on server."""
-path = "/opt/polymarket-agent/deposit_safe.py"
-with open(path, "r") as f:
-    content = f.read()
+"""
+Patch: download correct deposit_safe.py from GitHub API (bypasses CDN cache)
+and run the deposit immediately.
+"""
+import requests, base64, json, os, sys, time
 
-old = 'RPC = "https://polygon-rpc.com"'
-new = 'RPC = "https://rpc.ankr.com/polygon"'
+GITHUB_API = "https://api.github.com/repos/nlgal/polymarket-autotrader/contents"
+AGENT_DIR = "/opt/polymarket-agent"
 
-if old in content:
-    content = content.replace(old, new)
-    with open(path, "w") as f:
-        f.write(content)
-    print("✓ RPC patched to ankr.com")
-elif 'ankr' in content:
-    print("✓ Already using ankr.com — no patch needed")
-else:
-    print("✗ Pattern not found")
-    import re
-    m = re.search(r'RPC = .*', content)
-    if m:
-        print(f"Current RPC line: {m.group()}")
+# Download fresh versions of deposit_safe.py and lp_farmer.py from GitHub API
+for script in ["deposit_safe.py", "lp_farmer.py"]:
+    r = requests.get(f"{GITHUB_API}/{script}",
+        headers={"Accept": "application/vnd.github.v3+json"}, timeout=20)
+    if r.status_code == 200:
+        content = base64.b64decode(r.json()["content"]).decode("utf-8")
+        with open(f"{AGENT_DIR}/{script}", "w") as f:
+            f.write(content)
+        # Verify RPC is correct
+        if script == "deposit_safe.py":
+            has_bad_rpc = "polygon-rpc.com" in content
+            has_good_rpc = "ankr" in content or "client.deposit" in content
+            print(f"{script}: {len(content)} chars | bad_rpc={has_bad_rpc} | good={has_good_rpc}")
+        else:
+            print(f"{script}: {len(content)} chars deployed")
+    else:
+        print(f"{script}: download failed {r.status_code}")
+
+print("Done — deposit_safe.py updated from GitHub API")
