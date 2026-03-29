@@ -1,3 +1,23 @@
+## ⛔ ABSOLUTE RULE — NEVER VIOLATE
+**NO ON-CHAIN TRANSACTIONS WITHOUT EXPLICIT USER APPROVAL**
+
+This means: no Safe transactions, no contract calls, no token transfers, no deposits,
+no approvals, no withdrawals — NOTHING that touches the blockchain — unless the user
+has explicitly said "yes, do it" for that specific transaction in this conversation.
+
+This rule exists because on March 28, 2026, an automated deposit sent $670 USDC to
+the wrong contract (Relay.link depository instead of Polymarket), resulting in permanent
+financial loss. The transaction was executed without user confirmation.
+
+Before any on-chain action:
+1. Show the user EXACTLY what transaction will be executed (contract, amount, calldata)
+2. Get explicit "yes" from the user
+3. Only then execute
+
+If in doubt: DO NOT EXECUTE. Ask first.
+
+---
+
 # HARD RULES — Read Before Every Trade Decision
 # Machine-readable guardrails. These override any other signal, edge score, or LLM reasoning.
 # Updated: March 28, 2026 | Source: 11 lessons with >$900 in documented losses
