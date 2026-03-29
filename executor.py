@@ -88,7 +88,7 @@ COMMANDS = {
         f"curl -s 'https://api.github.com/repos/nlgal/polymarket-autotrader/contents/inject_discord_env.py' "
         f"-H 'Accept: application/vnd.github.v3.raw' "
         f"-o {AGENT_DIR}/inject_discord_env.py && "
-        f"echo 'sports+discord+inject deployed'"
+        f"curl -s 'https://api.github.com/repos/nlgal/polymarket-autotrader/contents/auto_redeem.py' -H 'Accept: application/vnd.github.v3.raw' -o /opt/polymarket-agent/auto_redeem.py && echo 'sports+discord+inject+autredeem deployed'"
     ),
     "deploy_all": (
         f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/autotrader.py "
@@ -143,6 +143,7 @@ ALLOWED_SCRIPTS = {
     "patch_discord_env.py",
     "inject_discord_env.py",
     "place_clippers_lac.py",
+    "auto_redeem.py",
 }
 
 
