@@ -72,9 +72,34 @@ try:
 except Exception as e:
     print(f"Autotrader deploy failed: {e}")
 
-# 5. Clear pycache
+# 6. Deploy live_sports_trader.py
+try:
+    sports, sp_sha = fetch("live_sports_trader.py")
+    with open(f"{TARGET_DIR}/live_sports_trader.py", "w") as f:
+        f.write(sports)
+    print(f"Sports trader deployed: {len(sports)} chars (sha={sp_sha})")
+except Exception as e:
+    print(f"Sports trader deploy failed: {e}")
+
+# 7. Deploy updated executor.py (with live_sports_trader.py in whitelist)
+try:
+    executor, ex_sha = fetch("executor.py")
+    with open(f"{TARGET_DIR}/executor.py", "w") as f:
+        f.write(executor)
+    has_sports = "live_sports_trader.py" in executor
+    print(f"Executor deployed: {len(executor)} chars (sha={ex_sha}) | sports_whitelisted={has_sports}")
+    # Restart executor service to reload whitelist
+    rx = subprocess.run(["systemctl", "restart", "executor"],
+        capture_output=True, text=True, timeout=15)
+    rx2 = subprocess.run(["systemctl", "is-active", "executor"],
+        capture_output=True, text=True)
+    print(f"executor service: restart={rx.returncode} status={rx2.stdout.strip()}")
+except Exception as e:
+    print(f"Executor deploy failed: {e}")
+
+# 8. Clear pycache
 for pyc in glob.glob(f"{TARGET_DIR}/**/*.pyc", recursive=True):
-    if any(x in pyc for x in ["opportunity_scanner","autotrader","strategy_optimizer"]):
+    if any(x in pyc for x in ["opportunity_scanner","autotrader","strategy_optimizer","live_sports_trader"]):
         try: os.remove(pyc)
         except: pass
 
