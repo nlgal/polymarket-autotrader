@@ -2215,8 +2215,24 @@ def check_thesis_invalidation(client):
         avg_p        = float(p.get("avgPrice", 0) or 0)
         size         = float(p.get("size", 0) or 0)
 
-        # ── HARD SKIP 1: Condition ID blacklist ────────────────────────────
-        # Any market in this list is NEVER thesis-checked. Permanent.
+        # ── HARD SKIP 1: Short-duration markets (sports games, daily markets) ──
+        # Any position expiring within 3 days is NEVER thesis-sold.
+        # Sports games expire same-day. Thesis checking a live game = disaster.
+        # High price (90c+) during a game means the team is WINNING, not done.
+        import datetime as _thesis_dt
+        _end_date_str = p.get("endDate", "") or p.get("end_date", "")
+        if _end_date_str:
+            try:
+                _end_dt  = _thesis_dt.datetime.fromisoformat(_end_date_str.replace("Z", "+00:00"))
+                _now_dt  = _thesis_dt.datetime.now(_thesis_dt.timezone.utc)
+                _days_left = (_end_dt - _now_dt).total_seconds() / 86400
+                if _days_left < 3:
+                    log(f"[THESIS] {title[:45]} — expires in {_days_left:.1f}d, skip", Fore.MAGENTA)
+                    continue
+            except Exception:
+                pass
+
+        # ── HARD SKIP 2: Condition ID blacklist ───────────────────────────
         _THESIS_BLACKLIST = {
             "0x87254ca39f82f1fdef981066710fb49904e86358bcf1ed9a4e05e4558d665329",  # Duke vs UConn
             "0xb54b0241f4f33e6734a29df5d59e0b4fbb7b96cf92d2c7151622cdb294c94516",  # Clippers vs Bucks ML
@@ -2225,24 +2241,16 @@ def check_thesis_invalidation(client):
             log(f"[THESIS] {title[:45]} — condition ID blacklisted, skip", Fore.MAGENTA)
             continue
 
-        # ── HARD SKIP 2: Sports game markets ──────────────────────────────
-        # These resolve on live score, not thesis validity.
-        # High price (90c+) during a game = team is WINNING, not thesis complete.
-        # NEVER sell these — let them resolve naturally.
+        # ── HARD SKIP 3: Sports keywords (belt+suspenders) ────────────────
         _SPORTS_GAME_KEYWORDS = [
             " vs. ", " vs ", "spread:", "o/u ", "over/under",
-            "moneyline", " ml ",
-            # Team names
             "clippers", "bucks", "celtics", "lakers", "heat", "nuggets",
             "thunder", "spurs", "knicks", "pistons", "warriors", "nets",
-            "duke", "uconn", "michigan", "tennessee", "kansas", "kentucky",
-            "connecticut huskies", "blue devils",
-            # Sports leagues / events
-            "ncaa", "nba ", "nhl ", "nfl ", "mlb ",
-            "atp ", "wta ", "miami open", "french open", "wimbledon",
+            "duke", "uconn", "michigan", "tennessee", "connecticut huskies",
+            "blue devils", "ncaa", "nba ", "nhl ", "nfl ", "atp ", "wta ",
         ]
         if any(kw in title.lower() for kw in _SPORTS_GAME_KEYWORDS):
-            log(f"[THESIS] {title[:45]} — sports game market, skip", Fore.MAGENTA)
+            log(f"[THESIS] {title[:45]} — sports keyword match, skip", Fore.MAGENTA)
             continue
 
         # Grace period: never thesis-exit a position bought in last 4 hours.
