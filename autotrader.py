@@ -1369,6 +1369,8 @@ def score_market(market, mode="NORMAL"):
     # ── CONDITION ID BLACKLIST — never trade these markets again ──────────────
     # Lessons 9, 10, 11: crude oil at trigger, BTC near trigger → blocked permanently
     _AUTOTRADER_BLACKLIST = {
+        # Sports game markets — auto-sold too early, let these resolve naturally
+        "0x87254ca39f82f1fdef981066710fb49904e86358bcf1ed9a4e05e4558d665329": "Duke vs UConn ML — hold until resolution",
         "0xc5300759dc2089042380795fe7384010a6b6ebdf9e6da7ed3f786d9a5f61c563":
             "Lesson 9+10: Crude Oil $100 HIGH — bought NO 4x when WTI was at trigger",
         "0x36912c9832f0fd104d734b579fb9b3a1b31bbdc946a67356723407e3bdc96dbc":
