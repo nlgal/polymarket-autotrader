@@ -82,7 +82,13 @@ COMMANDS = {
         f"curl -s 'https://api.github.com/repos/nlgal/polymarket-autotrader/contents/rederive_and_sell.py' "
         f"-H 'Accept: application/vnd.github.v3.raw' "
         f"-o {AGENT_DIR}/rederive_and_sell.py && "
-        f"echo 'sports_trader+rederive deployed'"
+        f"curl -s 'https://api.github.com/repos/nlgal/polymarket-autotrader/contents/discord_monitor.py' "
+        f"-H 'Accept: application/vnd.github.v3.raw' "
+        f"-o {AGENT_DIR}/discord_monitor.py && "
+        f"curl -s 'https://api.github.com/repos/nlgal/polymarket-autotrader/contents/inject_discord_env.py' "
+        f"-H 'Accept: application/vnd.github.v3.raw' "
+        f"-o {AGENT_DIR}/inject_discord_env.py && "
+        f"echo 'sports+discord+inject deployed'"
     ),
     "deploy_all": (
         f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/autotrader.py "
