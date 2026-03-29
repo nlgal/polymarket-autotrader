@@ -111,6 +111,7 @@ ALLOWED_SCRIPTS = {
     "deploy_config.py",
     "sell_btc65k_no.py",
     "deposit_safe.py",
+    "patch_deposit_rpc.py",
     "lp_farmer.py",
     "opportunity_scanner.py",
     "deploy_btc_momentum.py",
