@@ -124,6 +124,7 @@ Stick to these — they have positive expected value based on 63% closed trade w
 3. Ghost order book markets / FDV (Lesson 3 — $125 lost)
 4. Sports without UW data (Lesson 2 — $64 lost)
 5. Re-entering positions the same session (Lesson 4 — $75 lost)
+6. **NEVER thesis-sell or exit a LIVE SPORTS GAME MARKET** — these resolve on final score, not news. A price of 90¢+ during a game means the team is WINNING, not that the thesis is complete. Hold until market closes. (Lesson 12 — ~$40 lost from Duke/Clippers churn)
 
 ---
 
