@@ -2757,7 +2757,10 @@ def run_cycle(client, state):
 
     # ── 1. Manage existing positions (sell signals + thesis checks) ────────────
     manage_positions(client)
-    check_thesis_invalidation(client)  # re-check news on all open positions
+    # DISABLED: check_thesis_invalidation — repeatedly selling live sports bets (Clippers, Duke, Spain)
+    # The thesis checker cannot distinguish 'game in progress at 85c' from 'thesis failed'
+    # Re-enable only after adding a reliable way to detect sports vs prediction markets
+    # check_thesis_invalidation(client)
 
     # ── 2. Get current equity and update control plane ─────────────────────────
     equity_now = get_equity(client)
