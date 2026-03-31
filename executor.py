@@ -144,6 +144,7 @@ ALLOWED_SCRIPTS = {
     "inject_discord_env.py",
     "place_clippers_lac.py",
     "place_spain_yes.py",
+    "place_blg.py",
     "auto_redeem.py",
     "whale_monitor.py",
     "check_whale.py",
