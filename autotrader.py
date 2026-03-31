@@ -501,7 +501,7 @@ TOP_MARKETS_TO_SCORE  = 30   # How many top-volume to score with AI
 ORDER_TTL_MINUTES     = 20
 PROFIT_TARGET         = 0.80
 STOP_LOSS             = 0.35
-NEAR_RESOLUTION_THRESHOLD = 0.94
+NEAR_RESOLUTION_THRESHOLD = 0.99  # Only sell when essentially resolved (was 0.94 — sold Spain/Duke at 92c)
 PROFIT_LOCK_GAIN      = 0.40    # Sell half when unrealized gain on NO position ≥ 40%
 PROFIT_LOCK_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profit_locks.json")
 MAX_PER_MARKET_USDC   = 200   # Never put more than $200 into a single market
@@ -2424,9 +2424,38 @@ def manage_positions(client):
     except Exception as _pe:
         log(f"  positions API augmentation failed: {_pe}", Fore.YELLOW)
 
+    # Build title lookup from positions API so we can skip sports markets
+    _title_lookup = {}
+    try:
+        import requests as _pr2
+        _pos_r2 = _pr2.get(f"https://data-api.polymarket.com/positions?user={FUNDER}&limit=100", timeout=8)
+        if _pos_r2.status_code == 200:
+            for _p2 in _pos_r2.json():
+                _asset2 = _p2.get("asset", "")
+                _title2 = _p2.get("title", "") or _p2.get("market", "")
+                if _asset2 and _title2:
+                    _title_lookup[_asset2] = _title2
+    except Exception:
+        pass
+
+    # Sports keywords — positions with these titles are NEVER auto-sold by profit checker
+    _PROFIT_SPORTS_KEYWORDS = [
+        " vs. ", " vs ", "spread:", "will ", "win on 2026", "win on 2025",
+        "clippers", "bucks", "celtics", "lakers", "heat", "nuggets", "thunder",
+        "duke", "uconn", "michigan", "tennessee", "spain", "germany", "france",
+        "connecticut", "ncaa", "nba ", "nhl ", "nfl ", "atp ", "wta ",
+        "miami open", "fifa", "world cup",
+    ]
+
     for token_id, pos in positions.items():
         shares = pos["shares"]
         if shares <= 0.1:
+            continue
+
+        # Skip sports game markets — they resolve on score, not thesis
+        _pos_title = _title_lookup.get(token_id, "").lower()
+        if _pos_title and any(kw in _pos_title for kw in _PROFIT_SPORTS_KEYWORDS):
+            log(f"  [PROFIT-SKIP] {_pos_title[:45]} — sports market, skip profit check", Fore.CYAN)
             continue
 
         avg_entry  = pos["cost"] / (pos["shares"] + 1e-9)
