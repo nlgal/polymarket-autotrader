@@ -64,6 +64,29 @@ MIN_TRADE_SIZE   = 35
 UW_EDGE_DISCOUNT = 0.20   # Lower edge threshold by 20% when UW insider/whale signal present
 ALREADY_IN_FILE  = "/opt/polymarket-agent/intelligence/existing_positions.json"
 SCAN_LOG         = "/opt/polymarket-agent/opportunity_scan.log"
+SCAN_SCORE_CACHE_TTL = 7200  # 2 hours — skip re-scoring if price unchanged
+
+# ── Scan score cache (keyed on conditionId, invalidated by price move ≥ 0.5¢) ──
+_scan_score_cache: dict = {}  # {conditionId: {ts, yes_p, action, edge, reasoning}}
+
+def _scan_cache_get(mkt):
+    """Return cached (action, edge, reasoning) if fresh and price unchanged."""
+    key = mkt.get("conditionId", "") or mkt.get("question", "")[:80]
+    entry = _scan_score_cache.get(key)
+    if not entry:
+        return None
+    if time.time() - entry["ts"] > SCAN_SCORE_CACHE_TTL:
+        return None
+    if abs(entry["yes_p"] - mkt.get("yes_p", 0)) > 0.005:
+        return None  # price moved — re-score
+    return entry["action"], entry["edge"], entry["reasoning"]
+
+def _scan_cache_set(mkt, action, edge, reasoning):
+    key = mkt.get("conditionId", "") or mkt.get("question", "")[:80]
+    _scan_score_cache[key] = {
+        "ts": time.time(), "yes_p": mkt.get("yes_p", 0),
+        "action": action, "edge": edge, "reasoning": reasoning,
+    }
 
 def tg(msg, parse_mode="HTML"):
     if TG_TOKEN and TG_CHAT:
@@ -894,21 +917,49 @@ def main():
         if uw_sig:
             log(f"  [UW] {q[:40]}: tags={uw_tags[:3]} vol=${uw_sig.get('smart_volume',0):,.0f}")
         
-        # Get news
-        snippets = fetch_news_snippets(q)
-        
-        # Tiered scoring:
-        #   >= $50: full bull/bear debate (3 Claude calls, adversarial)
-        #   >= $30: consensus vote (Claude + Perplexity in parallel)
-        #   <  $30: single Claude call
-        projected_size = min(MAX_TRADE_SIZE, cash_remaining * 0.3)
-        projected_size = max(MIN_TRADE_SIZE, projected_size)
-        if projected_size >= BULL_BEAR_THRESHOLD:
-            action, edge, reasoning = bull_bear_debate(q, yes_p, mkt["description"], snippets, uw_summary_text)
-        elif projected_size >= CONSENSUS_THRESHOLD and PERPLEXITY_KEY:
-            action, edge, reasoning, _votes = consensus_vote(q, yes_p, mkt["description"], snippets, uw_summary_text)
+        # ── OPT-1: Scan score cache — skip re-scoring if price unchanged ────
+        _cached_score = _scan_cache_get(mkt)
+        if _cached_score is not None:
+            action, edge, reasoning = _cached_score
+            log(f"  [SCAN-CACHE] {q[:50]} — reusing {action} edge={edge:.2f}")
         else:
-            action, edge, reasoning = score_with_claude(q, yes_p, mkt["description"], snippets, uw_summary_text)
+            # Get news
+            snippets = fetch_news_snippets(q)
+
+            # ── OPT-2: Fast-reject gate — 1 cheap Haiku call before bull/bear ──
+            # If there's clearly no edge, bail before spending 3 calls on debate.
+            # Only gate when projected size would hit bull/bear path AND no UW signal.
+            projected_size = min(MAX_TRADE_SIZE, cash_remaining * 0.3)
+            projected_size = max(MIN_TRADE_SIZE, projected_size)
+            _skip_to_pass = False
+            if projected_size >= BULL_BEAR_THRESHOLD and not has_insider:
+                _gate_prompt = (
+                    f"Prediction market: '{q}'\n"
+                    f"YES price: {yes_p:.2f} | Description: {mkt['description'][:200]}\n"
+                    f"News: {snippets[:300]}\n\n"
+                    "Is there ANY genuine mispricing edge here (≥15pp) that a well-informed trader would act on?\n"
+                    "Respond with ONLY: YES or NO. Do not explain."
+                )
+                _gate_answer = claude_call(_gate_prompt, max_tokens=5).strip().upper()
+                log(f"  [GATE] {q[:45]} → {_gate_answer}")
+                if _gate_answer == "NO" or "NO" in _gate_answer:
+                    _skip_to_pass = True
+                    action, edge, reasoning = "PASS", 0.0, "fast-reject gate: no edge signal"
+
+            if not _skip_to_pass:
+                # Tiered scoring:
+                #   >= $50 + UW signal or gate passed: full bull/bear debate (3 Claude calls)
+                #   >= $30: consensus vote (Claude + Perplexity in parallel)
+                #   <  $30: single Claude call
+                if projected_size >= BULL_BEAR_THRESHOLD:
+                    action, edge, reasoning = bull_bear_debate(q, yes_p, mkt["description"], snippets, uw_summary_text)
+                elif projected_size >= CONSENSUS_THRESHOLD and PERPLEXITY_KEY:
+                    action, edge, reasoning, _votes = consensus_vote(q, yes_p, mkt["description"], snippets, uw_summary_text)
+                else:
+                    action, edge, reasoning = score_with_claude(q, yes_p, mkt["description"], snippets, uw_summary_text)
+
+            # Cache the result regardless of outcome
+            _scan_cache_set(mkt, action, edge, reasoning)
         
         # Lower threshold when UW insider/whale signal present
         effective_threshold = MIN_SCAN_EDGE * (1 - UW_EDGE_DISCOUNT) if has_insider else MIN_SCAN_EDGE

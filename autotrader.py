@@ -1342,13 +1342,25 @@ def compute_polymarket_fee(price: float, fee_rate: float = 0.25, exponent: float
 
 
 def is_fee_enabled_market(market: dict) -> bool:
-    """Check if this market has fees enabled (crypto, NCAAB, Serie A)."""
+    """Check if this market has fees enabled.
+    Updated March 30 2026: fees expanded to crypto, sports, politics, finance,
+    economics, culture, weather, tech, other/general, mentions.
+    ONLY geopolitical/world-events markets remain permanently fee-free.
+    """
     if market.get("fees_enabled", False):
         return True
-    # Fallback: detect by question keywords
-    q = market.get("question", "").lower()
-    return any(kw in q for kw in ["bitcoin", "btc", "ethereum", "eth",
-                                    "15-minute", "ncaab", "serie a"])
+    q = market.get("question", "").lower() + " " + market.get("title", "").lower()
+    # Geopolitical / world events — permanently fee-free
+    _geo_keywords = [
+        "iran", "ceasefire", "forces enter", "regime fall", "kharg", "nuclear deal",
+        "war by", "conflict", "invasion", "military", "coup", "regime", "sanctions",
+        "peace deal", "prime minister", "president", "election", "government",
+        "treaty", "nato", "un security", "ukraine", "russia", "china invade",
+    ]
+    if any(kw in q for kw in _geo_keywords):
+        return False  # geopolitical — fee-free
+    # All other categories now have fees
+    return True
 
 
 def score_market(market, mode="NORMAL"):
@@ -1432,6 +1444,47 @@ def score_market(market, mode="NORMAL"):
         log(f"  [CACHE HIT] {market.get('question','')[:55]} edge={cached.get('edge',0):+.3f}", Fore.CYAN)
         return {**market, **cached}
 
+    # ── OPT-3: Fast-reject gate — 1 cheap Haiku call to skip obvious PASSes ──
+    # Saves the Perplexity news call + full scoring for markets with no real edge.
+    # Gate fires ONLY when no UW signal present (UW signals always worth full scoring).
+    # Pre-check UW cache (already populated by prior cycles, fetch is cached 10min)
+    _uw_pre = fetch_uw_signals()
+    _tok_yes = market.get("yes_token_id", "")
+    _tok_no  = market.get("no_token_id", "")
+    _has_uw = any(
+        s.get("asset_id") in (_tok_yes, _tok_no)
+        for pool in [_uw_pre.get("unusual", []), _uw_pre.get("insiders", [])]
+        for s in pool
+    )
+    if not _has_uw:
+        try:
+            import anthropic as _anth
+            _ac_gate = getattr(score_market, "_ac", None)
+            if _ac_gate is None:
+                _ac_gate = _anth.Anthropic(api_key=api_key)
+                score_market._ac = _ac_gate
+            _q = market.get("question", "")
+            _yp = market.get("yes_price", 0.5)
+            _gate_resp = _ac_gate.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=5,
+                messages=[{"role": "user", "content": (
+                    f"Prediction market: '{_q}'\nYES price: {_yp:.2f}\n"
+                    "Is there ANY genuine mispricing edge (≥15pp) a well-informed trader would act on?\n"
+                    "Respond ONLY: YES or NO."
+                )}],
+                temperature=0.0,
+            )
+            _count_api_call()
+            _gate_answer = _gate_resp.content[0].text.strip().upper()
+            if _gate_answer == "NO" or _gate_answer.startswith("NO"):
+                log(f"  [GATE-SKIP] {market.get('question','')[:55]}", Fore.CYAN)
+                result = {**market, "action": "PASS", "edge": 0,
+                          "confidence": "low", "reasoning": "fast-reject gate: no edge"}
+                _set_cached_score(market, result)
+                return result
+        except Exception as _ge:
+            pass  # gate failure — fall through to full scoring
 
     news = ""
     pplx_key = os.environ.get("PERPLEXITY_API_KEY", "").strip()
