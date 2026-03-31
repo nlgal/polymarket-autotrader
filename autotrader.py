@@ -2424,6 +2424,21 @@ def manage_positions(client):
     except Exception as _pe:
         log(f"  positions API augmentation failed: {_pe}", Fore.YELLOW)
 
+    # ── SPORTS BLACKLIST: read from JSON file every cycle (bypasses .pyc cache) ──
+    # This is the one protection that works even if bytecode is stale.
+    # Add any sports market conditionId to /opt/polymarket-agent/sports_blacklist.json
+    _sports_bl_cids  = set()
+    _sports_bl_tokens = set()
+    try:
+        import json as _jmod
+        _bl_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sports_blacklist.json")
+        if os.path.exists(_bl_path):
+            _bl_data = _jmod.load(open(_bl_path))
+            _sports_bl_cids   = set(_bl_data.get("condition_ids", []))
+            _sports_bl_tokens = set(_bl_data.get("yes_tokens", []))
+    except Exception:
+        pass
+
     # Build title lookup from positions API so we can skip sports markets
     _title_lookup = {}
     try:
@@ -2450,6 +2465,12 @@ def manage_positions(client):
     for token_id, pos in positions.items():
         shares = pos["shares"]
         if shares <= 0.1:
+            continue
+
+        # Skip if in JSON sports blacklist (runtime check — bypasses .pyc)
+        _pos_cid = pos.get("condition_id", pos.get("conditionId", ""))
+        if token_id in _sports_bl_tokens or _pos_cid in _sports_bl_cids:
+            log(f"  [PROFIT-SKIP-JSON] {token_id[:16]}... in sports_blacklist.json", Fore.CYAN)
             continue
 
         # Skip sports game markets — they resolve on score, not thesis

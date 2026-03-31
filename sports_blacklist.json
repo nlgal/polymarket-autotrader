@@ -1,0 +1,13 @@
+{
+  "description": "Sports game markets - never sell these via profit checker or thesis checker",
+  "condition_ids": [
+    "0xecc774b4421aadd9bb3ef101fe87174521867f4fe493acf00b098aff16da6548",
+    "0x87254ca39f82f1fdef981066710fb49904e86358bcf1ed9a4e05e4558d665329",
+    "0xb54b0241f4f33e6734a29df5d59e0b4fbb7b96cf92d2c7151622cdb294c94516",
+    "0x6d8082cb0513cc71462e6dd81862adfe3a913ed579c8968bb36dfc255d0c2774"
+  ],
+  "yes_tokens": [
+    "61468494203813144973651399918553760050651514563967836538381711814685908620996"
+  ],
+  "note": "Add any sports game market here. Autotrader reads this file each cycle."
+}
