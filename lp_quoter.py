@@ -329,9 +329,13 @@ def run_market(client, mkt, state, open_orders, usdc_avail):
         yes_cost = target * yes_mid
         no_cost  = target * no_mid
 
-    # Place YES buy and NO buy at midpoint (maximum reward score)
-    yes_oid, yes_p = place_buy(client, mkt["yes_token"], yes_mid, target, f"[{label}] YES")
-    no_oid,  no_p  = place_buy(client, mkt["no_token"],  no_mid,  target, f"[{label}] NO")
+    # Place YES buy and NO buy near midpoint for maximum reward score.
+    # Pull back 0.5 ticks from midpoint so the order rests as a maker
+    # without crossing the book (avoids 'crosses the book' rejection).
+    yes_price = max(0.01, yes_mid - 0.005)
+    no_price  = max(0.01, no_mid  - 0.005)
+    yes_oid, yes_p = place_buy(client, mkt["yes_token"], yes_price, target, f"[{label}] YES")
+    no_oid,  no_p  = place_buy(client, mkt["no_token"],  no_price,  target, f"[{label}] NO")
 
     placed = sum(1 for x in [yes_oid, no_oid] if x)
     if placed == 2:
