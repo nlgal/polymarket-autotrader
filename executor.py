@@ -143,6 +143,7 @@ ALLOWED_SCRIPTS = {
     "patch_discord_env.py",
     "inject_discord_env.py",
     "place_clippers_lac.py",
+    "place_spain_yes.py",
     "auto_redeem.py",
     "whale_monitor.py",
     "check_whale.py",
