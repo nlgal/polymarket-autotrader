@@ -40,7 +40,9 @@ LOG_FILE    = "/opt/polymarket-agent/lp_quoter.log"
 REBALANCE_THRESHOLD = 0.015   # 1.5 cents
 
 # Kill switch: if fills on one side exceed this USDC, stop quoting that market
-MAX_FILL_USDC_PER_SIDE = 250  # $250
+# Set high enough to allow normal fills (LP orders WILL get filled — that's fine)
+# This only triggers on runaway directional fills from a fast price move
+MAX_FILL_USDC_PER_SIDE = 600  # $600 — flags only if filled 3-4 full rounds one-way
 
 # Minimum USDC to keep as cash buffer (don't deploy everything)
 CASH_BUFFER = 100  # keep $100 free for autotrader
@@ -71,6 +73,7 @@ LP_MARKETS = [
         "target_shares": 500,   # each side
         "pool_day":    119,
         "enabled":     True,
+        "reset_fills":  True,   # reset fill counters on next run
     },
     {
         # Pool $2061/day, zone 403K shares — big pool, more competition
@@ -330,10 +333,16 @@ def run_market(client, mkt, state, open_orders, usdc_avail):
         no_cost  = target * no_mid
 
     # Place YES buy and NO buy near midpoint for maximum reward score.
-    # Pull back 0.5 ticks from midpoint so the order rests as a maker
-    # without crossing the book (avoids 'crosses the book' rejection).
-    yes_price = max(0.01, yes_mid - 0.005)
-    no_price  = max(0.01, no_mid  - 0.005)
+    # Pull back enough ticks to avoid crossing the book:
+    #   - Normal markets (mid 20-80¢): 1 tick back = 0.01
+    #   - Near-certain markets (mid >80¢ or <20¢): pull back more (0.02)
+    #     because the spread is extremely tight and midpoint ≈ best ask
+    def safe_price(mid):
+        pullback = 0.02 if (mid > 0.80 or mid < 0.20) else 0.01
+        return max(0.01, min(0.99, mid - pullback))
+
+    yes_price = safe_price(yes_mid)
+    no_price  = safe_price(no_mid)
     yes_oid, yes_p = place_buy(client, mkt["yes_token"], yes_price, target, f"[{label}] YES")
     no_oid,  no_p  = place_buy(client, mkt["no_token"],  no_price,  target, f"[{label}] NO")
 
@@ -415,6 +424,15 @@ def main():
 
     # State + open orders
     state = load_state()
+    # Re-enable markets flagged reset_fills (fill limit was triggered by first-run fills)
+    for mkt in LP_MARKETS:
+        if mkt.get("reset_fills"):
+            mkt["enabled"] = True
+            ms = state.get(mkt["label"], {})
+            ms["yes_filled_usdc"] = 0.0
+            ms["no_filled_usdc"]  = 0.0
+            state[mkt["label"]] = ms
+            mkt.pop("reset_fills", None)
     open_orders = get_open_orders(client)
     open_order_ids = {o["id"] for o in open_orders}
     log(f"Open orders: {len(open_orders)}")
