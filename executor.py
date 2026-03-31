@@ -128,6 +128,7 @@ ALLOWED_SCRIPTS = {
     "deposit_safe.py",
     "patch_deposit_rpc.py",
     "lp_farmer.py",
+    "lp_quoter.py",
     "opportunity_scanner.py",
     "deploy_btc_momentum.py",
     "exit_contradictions.py",
