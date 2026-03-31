@@ -145,6 +145,7 @@ ALLOWED_SCRIPTS = {
     "place_clippers_lac.py",
     "place_spain_yes.py",
     "place_blg.py",
+    "deploy_sports_bl.py",
     "auto_redeem.py",
     "whale_monitor.py",
     "check_whale.py",
