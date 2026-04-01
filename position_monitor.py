@@ -19,6 +19,20 @@ State: /opt/polymarket-agent/position_monitor_state.json
 
 import os, sys, json, time, datetime, requests
 sys.path.insert(0, '/opt/polymarket-agent')
+
+# ── Optional modules (fail gracefully if not present) ────────────────────────
+def _try_import(module_name):
+    try:
+        import importlib.util as _ilu
+        spec = _ilu.spec_from_file_location(
+            module_name, f"/opt/polymarket-agent/{module_name}.py")
+        if spec is None:
+            return None
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
 from dotenv import load_dotenv
 load_dotenv('/opt/polymarket-agent/.env')
 
@@ -250,6 +264,23 @@ def main():
         )
         log(f"  CONTRADICTION: {c['title']} — loss ${loss:.0f} if resolved")
     
+    # ── 1b. Market guardrails (Hungary NO, etc.) ────────────────────────────────
+    _guardrails_mod = _try_import("market_guardrails")
+    if _guardrails_mod:
+        try:
+            _g_action, _g_details = _guardrails_mod.check_hungary_guardrail()
+            if _g_action and _g_action not in ("blocked_illiquid", "sell_failed",
+                                                "already_actioned", None):
+                alerts.append(
+                    f"🛡️ <b>Guardrail executed</b>: Hungary NO {_g_action}\n"
+                    f"  {json.dumps(_g_details)[:120]}"
+                )
+                log(f"  Guardrail executed: {_g_action}")
+        except Exception as _ge:
+            log(f"  Guardrail error: {_ge}")
+    else:
+        log("  market_guardrails.py not found — skip guardrail check")
+
     # ── 2. Per-position checks ────────────────────────────────────────────────
     for p in positions:
         title   = p.get("title", "")[:55]
@@ -335,6 +366,14 @@ def main():
     
     log(f"Haiku calls: {haiku_calls} | Positions checked: {len(positions)}")
     
+    # ── 4. Post-trade review: run failure detection ──────────────────────────────
+    _ptr_mod = _try_import("post_trade_review")
+    if _ptr_mod:
+        try:
+            _ptr_mod.run_failure_detection(silent=True)
+        except Exception as _pe:
+            log(f"  post_trade_review detection error: {_pe}")
+
     # Save updated state
     state.update(updates)
     state["last_run"] = now_ts

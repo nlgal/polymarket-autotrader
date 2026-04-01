@@ -2685,6 +2685,41 @@ def manage_positions(client):
                     pnl = (sell_price - avg_entry) * sell_size
                     log(f"✓ SOLD {sell_size:.2f} shares @ ${sell_price:.3f} | PnL: ${pnl:+.2f} | {reason}", Fore.GREEN)
                     tg(f"💰 <b>SOLD</b> {sell_size:.1f} shares @ ${sell_price:.3f}\nP&L: ${pnl:+.2f} | {reason[:80]}")
+                    # ── Post-trade review hook ─────────────────────────────────────────────
+                    try:
+                        import importlib.util as _ptr_ilu
+                        _ptr_spec = _ptr_ilu.spec_from_file_location(
+                            "post_trade_review",
+                            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "post_trade_review.py")
+                        )
+                        if _ptr_spec:
+                            _ptr_mod = _ptr_ilu.module_from_spec(_ptr_spec)
+                            _ptr_spec.loader.exec_module(_ptr_mod)
+                            _market_type = _classify_market(market.get("question", ""))
+                            _ptr_mod.write_review(
+                                market_title=market.get("question", "")[:120],
+                                strategy_type="directional",
+                                category=_market_type,
+                                side="YES" if "YES" in reason.upper() or action == "BUY_YES" else "NO",
+                                entry_price=avg_entry,
+                                exit_price=sell_price,
+                                size=sell_size,
+                                realized_pnl=pnl,
+                                trigger_source=reason[:80],
+                                trade_type="automated",
+                                token_id=token_id,
+                                primary_failure_mode=(
+                                    "bad_exit_discipline" if pnl < -10
+                                    else "expiry_compression_misread" if "expir" in reason.lower()
+                                    else "none"
+                                ),
+                                process_quality="good",
+                                source_module="autotrader",
+                                notes=f"reason={reason[:100]}",
+                            )
+                    except Exception as _ptr_e:
+                        log(f"[LEARN] post_trade_review hook error: {_ptr_e}", Fore.YELLOW)
                 else:
                     err_msg = receipt.get('errorMsg', '')
                     if "not enough balance" in err_msg or "allowance" in err_msg:
@@ -2893,6 +2928,20 @@ def run_cycle(client, state):
     # ── Self-learning: record resolved trades, reflect if enough data ────
     record_resolved_trades()
     reflect_and_improve()
+    # ── Market guardrails (runs every cycle, fast — price check only) ──────────
+    try:
+        import importlib.util as _mg_ilu
+        _mg_spec = _mg_ilu.spec_from_file_location(
+            "market_guardrails",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "market_guardrails.py")
+        )
+        if _mg_spec:
+            _mg_mod = _mg_ilu.module_from_spec(_mg_spec)
+            _mg_spec.loader.exec_module(_mg_mod)
+            _mg_mod.check_hungary_guardrail()
+    except Exception as _mg_e:
+        log(f"[GUARDRAIL] check error: {_mg_e}", Fore.YELLOW)
     log("─" * 60)
     log(f"Starting scan cycle — {datetime.now().strftime('%H:%M:%S')}", Fore.CYAN)
 
