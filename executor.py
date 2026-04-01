@@ -129,6 +129,7 @@ ALLOWED_SCRIPTS = {
     "patch_deposit_rpc.py",
     "lp_farmer.py",
     "lp_quoter.py",
+    "position_monitor.py",
     "merge_apr30.py",
     "write_chunk_0.py",
     "write_chunk_1.py",
