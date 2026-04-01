@@ -84,6 +84,7 @@ LP_MARKETS = [
         "max_spread":  0.045,    # ±4.5 cents
         "min_shares":  200,
         "target_shares": 500,   # each side
+        "max_inventory": 1000,  # hard cap: stop quoting same side if holding >= this many shares
         "pool_day":    119,
         "enabled":     True,
         "reset_fills":  True,   # reset fill counters on next run
@@ -98,6 +99,7 @@ LP_MARKETS = [
         "max_spread":  0.045,
         "min_shares":  200,
         "target_shares": 1000,
+        "max_inventory": 1400,  # hard cap per side
         "pool_day":    2061,
         "enabled":     True,
     },
@@ -437,6 +439,28 @@ def run_market(client, mkt, state, open_orders, usdc_avail):
                     log(f"[{label}] Conflict: hold {pos_size:.0f} YES → blocking NO order")
     except Exception as _ce:
         pass  # conflict check failure → proceed (fail open, not closed)
+
+    # ── Inventory cap check ──────────────────────────────────────────────────
+    max_inv = mkt.get("max_inventory", 9999)
+    try:
+        _pos_r = requests.get(
+            f"https://data-api.polymarket.com/positions?user={FUNDER}&limit=50", timeout=8
+        )
+        if _pos_r.status_code == 200:
+            for _p in _pos_r.json():
+                if _p.get("conditionId","") != mkt.get("condition_id",""):
+                    continue
+                _out = _p.get("outcome","").upper()
+                _sz  = float(_p.get("size", 0))
+                if _sz >= max_inv:
+                    if _out == "YES" and not block_yes:
+                        block_yes = True
+                        log(f"[{label}] Inventory cap: hold {_sz:.0f} YES >= {max_inv} — blocking YES LP")
+                    elif _out == "NO" and not block_no:
+                        block_no = True
+                        log(f"[{label}] Inventory cap: hold {_sz:.0f} NO >= {max_inv} — blocking NO LP")
+    except Exception:
+        pass  # fail open
 
     yes_oid, yes_p = (None, yes_price) if block_yes else place_buy(client, mkt["yes_token"], yes_price, target, f"[{label}] YES")
     no_oid,  no_p  = (None, no_price)  if block_no  else place_buy(client, mkt["no_token"],  no_price,  target, f"[{label}] NO")
