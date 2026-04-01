@@ -206,7 +206,20 @@ def main():
     log(f"Signer: {signer_address} — tx sender")
     log(f"Funder: {funder_address} — token holder")
 
-    nonce     = get_nonce(rpc, signer_address)  # SIGNER nonce = 9
+    # Get nonce from multiple RPCs and take the maximum (some RPCs return stale data)
+    nonces = []
+    for _rpc in RPCS:
+        try:
+            n = int(requests.post(_rpc, json={
+                "jsonrpc":"2.0","method":"eth_getTransactionCount",
+                "params":[signer_address,"pending"],"id":1
+            }, timeout=8).json()["result"], 16)
+            nonces.append(n)
+            log(f"  Nonce from {_rpc.split('/')[-1]}: {n}")
+        except Exception:
+            pass
+    nonce = max(nonces) if nonces else get_nonce(rpc, signer_address)
+    log(f"Using nonce: {nonce} (max of {nonces})")
     gas_price = get_gas_price(rpc)
     gas_price_boosted = int(gas_price * 1.3)
 
