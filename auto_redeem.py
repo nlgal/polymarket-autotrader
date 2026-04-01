@@ -32,7 +32,7 @@ TG_TOKEN    = os.environ.get('TELEGRAM_TOKEN', '')
 TG_CHAT     = os.environ.get('TELEGRAM_CHAT_ID', '')
 
 # Polygon RPC
-RPC_URL = "https://polygon-rpc.com"
+RPC_URL = "https://polygon.drpc.org"
 
 # CTF contract (Gnosis Conditional Token Framework) on Polygon
 CTF_ADDRESS  = Web3.to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
