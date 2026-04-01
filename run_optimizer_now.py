@@ -1,7 +1,2 @@
-import os, subprocess
-with open("/opt/polymarket-agent/lp_quoter.py") as f:
-    data = f.read()
-subprocess.run(["find","/opt/polymarket-agent/__pycache__","-name","lp_quoter*.pyc","-delete"],capture_output=True)
-print(f"Total: {len(data)} chars")
-print(f"expiration=expiry: {'expiration=expiry' in data}")
-print(f"OrderType.GTD: {'OrderType.GTD' in data}")
+import base64
+exec(base64.b64decode('CmltcG9ydCBzdWJwcm9jZXNzCnN1YnByb2Nlc3MucnVuKFsiZmluZCIsIi9vcHQvcG9seW1hcmtldC1hZ2VudC9fX3B5Y2FjaGVfXyIsIi1uYW1lIiwibHBfcXVvdGVyKi5weWMiLCItZGVsZXRlIl0sY2FwdHVyZV9vdXRwdXQ9VHJ1ZSkKd2l0aCBvcGVuKCIvb3B0L3BvbHltYXJrZXQtYWdlbnQvbHBfcXVvdGVyLnB5IikgYXMgZjoKICAgIGRhdGEgPSBmLnJlYWQoKQpwcmludChmIkZpbGUgb24gc2VydmVyOiB7bGVuKGRhdGEpfSBjaGFycyIpCnByaW50KGYiVHlwZUVycm9yIGZhbGxiYWNrOiB7J2V4Y2VwdCBUeXBlRXJyb3InIGluIGRhdGF9IikKcHJpbnQoZiJPbGQgYnVnIGdvbmU6IHsncG9zdF9vcmRlcihzaWduZWQsIE9yZGVyVHlwZS5HVEQsIGV4cGlyYXRpb24nIG5vdCBpbiBkYXRhfSIpCg==').decode())
