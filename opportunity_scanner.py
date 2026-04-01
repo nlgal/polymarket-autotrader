@@ -410,6 +410,28 @@ CONSENSUS_THRESHOLD = 30   # Only run consensus vote on trades >= this size
 
 BULL_BEAR_THRESHOLD = 50  # Only run full bull/bear debate on trades >= this size
 
+# ── Token usage tracking (scanner) ───────────────────────────────────────────
+_HAIKU_IN_PRICE  = 0.80 / 1_000_000
+_HAIKU_OUT_PRICE = 4.00 / 1_000_000
+_SC_TOK: dict = {"in": 0, "out": 0, "calls": 0}
+
+def _sc_track(resp_json: dict):
+    """Track usage from raw Anthropic HTTP response JSON."""
+    u = resp_json.get("usage", {})
+    _SC_TOK["in"]    += u.get("input_tokens", 0)
+    _SC_TOK["out"]   += u.get("output_tokens", 0)
+    _SC_TOK["calls"] += 1
+
+def _sc_cost() -> float:
+    return _SC_TOK["in"] * _HAIKU_IN_PRICE + _SC_TOK["out"] * _HAIKU_OUT_PRICE
+
+def _sc_summary() -> str:
+    runs_per_day = 6  # after schedule optimization
+    cost = _sc_cost()
+    return (f"[TOKENS] {_SC_TOK['calls']} Haiku calls | "
+            f"in={_SC_TOK['in']:,} out={_SC_TOK['out']:,} | "
+            f"est ${cost:.4f}/run | daily@{runs_per_day}x ~${cost*runs_per_day:.3f}/day")
+
 def claude_call(prompt, max_tokens=300):
     """Raw Claude Haiku call. Returns text or empty string on error."""
     if not ANTHROPIC_KEY:
@@ -422,6 +444,7 @@ def claude_call(prompt, max_tokens=300):
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=20)
         if resp.status_code == 200:
+            _sc_track(resp.json())
             return resp.json().get("content", [{}])[0].get("text", "")
     except:
         pass
@@ -1074,9 +1097,11 @@ def main():
                f"{trade_lines}\n\n"
                f"Remaining cash: ${cash_remaining:.0f}")
         tg(msg)
+        log(_sc_summary())
         log(f"Scan complete: {len(trades_placed)} trades placed")
     else:
         # Silent if nothing — don't spam
+        log(_sc_summary())
         log(f"Scan complete: no trades. {len(skipped)} markets evaluated.")
         # Only notify if we had near-misses
         near = [s for s in skipped if s.get("edge",0) >= MIN_SCAN_EDGE * 0.7]

@@ -444,6 +444,7 @@ def reflect_and_improve():
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
         )
+        _track_usage(resp)
         new_lessons = resp.content[0].text.strip()
         ts_now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         with open(lessons_path, "w") as fh:
@@ -1476,6 +1477,7 @@ def score_market(market, mode="NORMAL"):
                 temperature=0.0,
             )
             _count_api_call()
+            _track_usage(_gate_resp)
             _gate_answer = _gate_resp.content[0].text.strip().upper()
             if _gate_answer == "NO" or _gate_answer.startswith("NO"):
                 log(f"  [GATE-SKIP] {market.get('question','')[:55]}", Fore.CYAN)
@@ -1681,6 +1683,7 @@ HARD PASS rules (return PASS immediately, no exceptions):
             temperature=0.1,
         )
         _count_api_call()  # track Anthropic call
+        _track_usage(resp)
         text = resp.content[0].text.strip()
         if text.startswith("```"):
             text = text.split("```")[1]
@@ -1739,6 +1742,40 @@ HARD PASS rules (return PASS immediately, no exceptions):
 # API call budget guard — alert if a cycle makes an unusual number of LLM calls
 _API_CALL_COUNT  = 0    # reset each cycle
 MAX_API_CALLS_PER_CYCLE = 80  # 30 markets * 2 APIs + buffer; >80 = runaway
+
+# ── Token usage tracking ─────────────────────────────────────────────────────
+# Haiku 4.5 pricing (2025): $0.80/M input, $4.00/M output
+# Cache read tokens (prompt caching): $0.08/M
+_HAIKU_IN_PRICE  = 0.80 / 1_000_000   # $ per input token
+_HAIKU_OUT_PRICE = 4.00 / 1_000_000   # $ per output token
+_HAIKU_CACHE_PRICE = 0.08 / 1_000_000 # $ per cache-read token
+
+_TOK: dict = {"in": 0, "out": 0, "cache_read": 0, "calls": 0, "calls_gated": 0}
+
+def _track_usage(resp):
+    """Record token usage from an Anthropic SDK response object."""
+    try:
+        u = resp.usage
+        _TOK["in"]   += getattr(u, "input_tokens", 0)
+        _TOK["out"]  += getattr(u, "output_tokens", 0)
+        _TOK["cache_read"] += getattr(u, "cache_read_input_tokens", 0)
+        _TOK["calls"] += 1
+    except Exception:
+        pass
+
+def _tok_cost() -> float:
+    return (_TOK["in"] * _HAIKU_IN_PRICE
+          + _TOK["out"] * _HAIKU_OUT_PRICE
+          + _TOK["cache_read"] * _HAIKU_CACHE_PRICE)
+
+def _tok_summary() -> str:
+    cost = _tok_cost()
+    return (f"[TOKENS] {_TOK['calls']} calls | "
+            f"in={_TOK['in']:,} out={_TOK['out']:,} cache_rd={_TOK['cache_read']:,} | "
+            f"est cost ${cost:.4f} | daily@{96}cyc ~${cost*96:.3f}/day")
+
+def _reset_tok():
+    for k in _TOK: _TOK[k] = 0
 
 def _count_api_call():
     """Increment the per-cycle API call counter."""
@@ -2369,6 +2406,7 @@ def check_thesis_invalidation(client):
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
             )
+            _track_usage(resp)
             verdict_text = resp.content[0].text.strip()
             verdict      = verdict_text.split("\n")[0].strip().upper()
             reason_line  = verdict_text.split("\n")[1].strip() if "\n" in verdict_text else ""
@@ -3121,6 +3159,10 @@ def run_cycle(client, state):
             break
 
     log(f"Cycle complete. {trades_placed} new trades placed. Mode: {mode}", Fore.CYAN)
+    if _TOK["calls"] > 0:
+        log(_tok_summary(), Fore.CYAN)
+    _reset_tok()
+    _API_CALL_COUNT = 0
 
     # ── 10. Weather scout (separate from LLM scoring — pure forecast arb) ────────
     if mode != "PAUSED" and allow_new_trades:
