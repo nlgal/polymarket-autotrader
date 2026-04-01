@@ -98,6 +98,16 @@ COMMANDS = {
         f"{VENV_PYTHON} -c \"import py_compile; py_compile.compile('{AGENT_DIR}/autotrader.py', doraise=True)\" && "
         f"systemctl restart polymarket && echo OK"
     ),
+    "deploy_new_modules": (
+        f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/market_guardrails.py "
+        f"-o {AGENT_DIR}/market_guardrails.py && "
+        f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/post_trade_review.py "
+        f"-o {AGENT_DIR}/post_trade_review.py && "
+        f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/position_monitor.py "
+        f"-o {AGENT_DIR}/position_monitor.py && "
+        f"{VENV_PYTHON} -c \"import py_compile; [py_compile.compile(f'{AGENT_DIR}/'+f, doraise=True) for f in ['market_guardrails.py','post_trade_review.py','position_monitor.py']]\" && "
+        f"echo OK"
+    ),
     "service_status":  "systemctl status polymarket --no-pager -l",
     "service_restart": "systemctl restart polymarket && echo OK",
     "service_stop":    "systemctl stop polymarket && echo OK",
@@ -158,6 +168,8 @@ ALLOWED_SCRIPTS = {
     "whale_monitor.py",
     "check_whale.py",
     "bootstrap_whale.py",
+    "market_guardrails.py",
+    "post_trade_review.py",
     "verify_fix.py",
     "whale_scanner.py",
     "patch_auto_redeem.py",
