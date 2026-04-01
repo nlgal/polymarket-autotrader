@@ -1,12 +1,7 @@
-"""Run strategy_optimizer.py and auto_dream."""
-import subprocess, sys
-
-result = subprocess.run(
-    ['/opt/polymarket-agent/venv/bin/python3', '/opt/polymarket-agent/strategy_optimizer.py'],
-    capture_output=True, text=True, timeout=90,
-    cwd='/opt/polymarket-agent'
-)
-print("STDOUT:", result.stdout[-2500:])
-if result.returncode != 0 and result.stderr.strip():
-    print("STDERR:", result.stderr[-300:])
-print(f"Exit: {result.returncode}")
+import os, subprocess
+with open("/opt/polymarket-agent/lp_quoter.py") as f:
+    data = f.read()
+subprocess.run(["find","/opt/polymarket-agent/__pycache__","-name","lp_quoter*.pyc","-delete"],capture_output=True)
+print(f"Total: {len(data)} chars")
+print(f"expiration=expiry: {'expiration=expiry' in data}")
+print(f"OrderType.GTD: {'OrderType.GTD' in data}")
