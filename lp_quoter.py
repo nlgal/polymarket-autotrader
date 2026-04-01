@@ -407,8 +407,39 @@ def run_market(client, mkt, state, open_orders, usdc_avail):
 
     yes_price = safe_price(yes_mid)
     no_price  = safe_price(no_mid)
-    yes_oid, yes_p = place_buy(client, mkt["yes_token"], yes_price, target, f"[{label}] YES")
-    no_oid,  no_p  = place_buy(client, mkt["no_token"],  no_price,  target, f"[{label}] NO")
+
+    # ── Position conflict check (EVPoly-inspired) ─────────────────────────
+    # If we hold a directional position >100 shares on this contract,
+    # block the LP bot from placing the opposing side.
+    # This prevents LP fills from creating losing contradictions.
+    CONFLICT_THRESHOLD = 100  # shares
+    block_yes = False
+    block_no  = False
+    try:
+        pos_r = requests.get(
+            f"https://data-api.polymarket.com/positions?user={FUNDER}&limit=50",
+            timeout=10
+        )
+        if pos_r.status_code == 200:
+            for pos in pos_r.json():
+                if pos.get("conditionId","") != mkt.get("condition_id",""):
+                    continue
+                pos_outcome = pos.get("outcome","").upper()
+                pos_size    = float(pos.get("size", 0))
+                if pos_size < CONFLICT_THRESHOLD:
+                    continue
+                # Block the opposing side
+                if pos_outcome == "NO":
+                    block_yes = True
+                    log(f"[{label}] Conflict: hold {pos_size:.0f} NO → blocking YES order")
+                elif pos_outcome == "YES":
+                    block_no = True
+                    log(f"[{label}] Conflict: hold {pos_size:.0f} YES → blocking NO order")
+    except Exception as _ce:
+        pass  # conflict check failure → proceed (fail open, not closed)
+
+    yes_oid, yes_p = (None, yes_price) if block_yes else place_buy(client, mkt["yes_token"], yes_price, target, f"[{label}] YES")
+    no_oid,  no_p  = (None, no_price)  if block_no  else place_buy(client, mkt["no_token"],  no_price,  target, f"[{label}] NO")
 
     placed = sum(1 for x in [yes_oid, no_oid] if x)
     if placed == 2:
