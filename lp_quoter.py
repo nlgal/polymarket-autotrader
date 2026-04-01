@@ -233,12 +233,13 @@ def place_buy(client, token_id, price, shares, label):
         price = round(round(price / tick_f) * tick_f, tick_dec)
         price = max(0.01, min(0.99, price))
 
-        args    = OrderArgs(token_id=token_id, price=price, size=round(shares, 2), side=BUY)
+        # GTD: expiration is set on OrderArgs, auto-expires after ORDER_TTL_SECONDS
+        expiry  = int(time.time()) + ORDER_TTL_SECONDS
+        args    = OrderArgs(token_id=token_id, price=price, size=round(shares, 2),
+                            side=BUY, expiration=expiry)
         opts    = PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk)
         signed  = client.create_order(args, opts)
-        # GTD: auto-expires after ORDER_TTL_SECONDS — prevents stale fills on crash
-        expiry  = int(time.time()) + ORDER_TTL_SECONDS
-        receipt = client.post_order(signed, OrderType.GTD, expiration=expiry)
+        receipt = client.post_order(signed, OrderType.GTD)
 
         if receipt.get("success"):
             oid = receipt.get("orderID", "?")
