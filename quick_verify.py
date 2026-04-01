@@ -1,7 +1,2 @@
-
-with open("/opt/polymarket-agent/autotrader.py") as f:
-    c = f.read()
-print(f"1. Thesis disabled: {'# check_thesis_invalidation(client)' in c and 'check_thesis_invalidation(client)  # re-check' not in c}")
-print(f"2. Sports profit guard: {'_PROFIT_SPORTS_KEYWORDS' in c}")
-print(f"3. Near-res 0.99: {'NEAR_RESOLUTION_THRESHOLD = 0.99' in c}")
-print(f"4. File size: {len(c)} chars")
+import base64
+exec(base64.b64decode("CmltcG9ydCBzdWJwcm9jZXNzLCBzeXMKCiMgUmVhZCByZWNlbnQgam91cm5hbApyZXN1bHQgPSBzdWJwcm9jZXNzLnJ1bigKICAgIFsiam91cm5hbGN0bCIsICItdSIsICJwb2x5bWFya2V0IiwgIi1uIiwgIjIwMCIsICItLW5vLXBhZ2VyIiwgIi0tb3V0cHV0PXNob3J0Il0sCiAgICBjYXB0dXJlX291dHB1dD1UcnVlLCB0ZXh0PVRydWUKKQpsaW5lcyA9IHJlc3VsdC5zdGRvdXQuc3BsaXQoIlxuIikKCiMgRmluZCBUT0tFTlMgbGluZXMgYW5kIHN1cnJvdW5kaW5nIGNvbnRleHQKZm9yIGksIGxpbmUgaW4gZW51bWVyYXRlKGxpbmVzKToKICAgIGlmICJbVE9LRU5TXSIgaW4gbGluZSBvciAiQ3ljbGUgY29tcGxldGUiIGluIGxpbmUgb3IgIkdBVEUtU0tJUCIgaW4gbGluZToKICAgICAgICBwcmludChsaW5lLnN0cmlwKCkpCgpwcmludCgiLS0tIikKcHJpbnQoZiJUb3RhbCBsb2cgbGluZXM6IHtsZW4obGluZXMpfSIpCiMgU2hvdyBsYXN0IDUgbGluZXMgcmVnYXJkbGVzcwpmb3IgbCBpbiBsaW5lc1stNjotMV06CiAgICBwcmludChsLnN0cmlwKCkpCg==").decode())
