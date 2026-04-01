@@ -233,13 +233,21 @@ def place_buy(client, token_id, price, shares, label):
         price = round(round(price / tick_f) * tick_f, tick_dec)
         price = max(0.01, min(0.99, price))
 
-        # GTD: expiration is set on OrderArgs, auto-expires after ORDER_TTL_SECONDS
+        # GTD: expiration on OrderArgs auto-cancels stale orders if bot crashes.
+        # Falls back to GTC if server SDK version doesn't support expiration.
         expiry  = int(time.time()) + ORDER_TTL_SECONDS
-        args    = OrderArgs(token_id=token_id, price=price, size=round(shares, 2),
-                            side=BUY, expiration=expiry)
+        try:
+            args = OrderArgs(token_id=token_id, price=price, size=round(shares, 2),
+                             side=BUY, expiration=expiry)
+        except TypeError:
+            # Older SDK version — expiration not supported as kwarg
+            args = OrderArgs(token_id=token_id, price=price, size=round(shares, 2), side=BUY)
         opts    = PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk)
         signed  = client.create_order(args, opts)
-        receipt = client.post_order(signed, OrderType.GTD)
+        try:
+            receipt = client.post_order(signed, OrderType.GTD)
+        except TypeError:
+            receipt = client.post_order(signed, OrderType.GTC)  # SDK fallback
 
         if receipt.get("success"):
             oid = receipt.get("orderID", "?")
