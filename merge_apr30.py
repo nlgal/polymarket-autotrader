@@ -198,16 +198,15 @@ def main():
     partition        = [1, 2]           # YES=bit0, NO=bit1
     amount_raw       = merge_count * 10**6  # USDC has 6 decimals
 
-    # Polymarket uses signature_type=2 (EIP-1271): the SIGNER EOA acts on behalf of FUNDER.
-    # The CTF tokens are held by FUNDER. The tx must be sent FROM FUNDER (nonce=1)
-    # using the SIGNER private key — this is Polymarket's proxy wallet pattern.
+    # Wallet architecture: SIGNER EOA (private key) is the actual on-chain sender.
+    # FUNDER is a Safe proxy; SIGNER has isApprovedForAll on CTF on behalf of FUNDER.
+    # On-chain txs originate from SIGNER (nonce 9), not FUNDER (nonce 1).
     signer_address = Web3.to_checksum_address(Account.from_key(PRIVATE_KEY).address)
     funder_address = Web3.to_checksum_address(FUNDER)
-    log(f"Signer EOA: {signer_address} (nonce={9}) — signs tx")
-    log(f"Funder:     {funder_address} (nonce=1) — holds tokens")
+    log(f"Signer: {signer_address} — tx sender")
+    log(f"Funder: {funder_address} — token holder")
 
-    # Tx sent FROM funder address, nonce from funder
-    nonce     = get_nonce(rpc, funder_address)
+    nonce     = get_nonce(rpc, signer_address)  # SIGNER nonce = 9
     gas_price = get_gas_price(rpc)
     gas_price_boosted = int(gas_price * 1.3)
 
@@ -220,6 +219,7 @@ def main():
     )
 
     tx = {
+        'from':     signer_address,   # SIGNER EOA sends the tx
         'nonce':    nonce,
         'to':       CTF_ADDRESS,
         'value':    0,
