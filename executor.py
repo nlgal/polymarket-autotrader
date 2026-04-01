@@ -129,6 +129,7 @@ ALLOWED_SCRIPTS = {
     "patch_deposit_rpc.py",
     "lp_farmer.py",
     "lp_quoter.py",
+    "merge_apr30.py",
     "opportunity_scanner.py",
     "deploy_btc_momentum.py",
     "exit_contradictions.py",
