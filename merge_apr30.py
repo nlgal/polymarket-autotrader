@@ -26,7 +26,12 @@ FUNDER      = os.environ['POLYMARKET_FUNDER_ADDRESS']
 TG_TOKEN    = os.environ.get('TELEGRAM_TOKEN', '')
 TG_CHAT     = os.environ.get('TELEGRAM_CHAT_ID', '')
 
-RPC_URL     = "https://polygon-rpc.com"
+RPC_URL     = "https://1rpc.io/matic"  # primary
+RPC_BACKUPS = [
+    "https://polygon.llamarpc.com",
+    "https://rpc.ankr.com/polygon",
+    "https://polygon-rpc.com",
+]
 USDC        = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
 CTF_ADDRESS = Web3.to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
 
@@ -141,16 +146,20 @@ def main():
 
     # --- Step 2: Connect to Polygon ---
     log("Connecting to Polygon...")
-    w3 = Web3(Web3.HTTPProvider(RPC_URL))
-    if not w3.is_connected():
-        # Try backup RPC
-        w3 = Web3(Web3.HTTPProvider("https://rpc-mainnet.matic.network"))
-    if not w3.is_connected():
-        log("ERROR: Cannot connect to Polygon RPC")
-        tg("❌ <b>Merge failed</b> — cannot connect to Polygon RPC")
+    w3 = None
+    for rpc in [RPC_URL] + RPC_BACKUPS:
+        try:
+            _w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 10}))
+            if _w3.is_connected():
+                w3 = _w3
+                log(f"Connected via {rpc} — block {w3.eth.block_number}")
+                break
+        except Exception:
+            continue
+    if w3 is None:
+        log("ERROR: Cannot connect to any Polygon RPC")
+        tg("\u274c <b>Merge failed</b> \u2014 cannot connect to Polygon RPC")
         return
-    log(f"Connected — block {w3.eth.block_number}")
-
     ctf = w3.eth.contract(address=CTF_ADDRESS, abi=CTF_ABI)
     account = Web3.to_checksum_address(FUNDER)
 
