@@ -15,7 +15,10 @@ Two-sided quoting earns 3× vs single-sided in the reward formula:
 Safety:
   - kill_lp.json: drop this file on server to cancel all orders immediately
   - MAX_FILL_USDC_PER_SIDE: stops quoting if filled too much one-directionally
-  - GTD orders: auto-expire after 1h (bot re-quotes next run)
+  - GTD orders: auto-expire after 70 min (prevents stale fills on crash)
+  - Activity guard: skips quoting if market traded < 3 min ago (price discovery)
+  - Fill scaling: reduces size to 300sh after large fills, 200sh after very large
+  - 1.5¢ pullback from midpoint: fill protection with 44% reward score (EVPoly-inspired)
   - No withdrawal permissions needed — CLOB API key only
 """
 
@@ -37,15 +40,25 @@ KILL_FILE   = "/opt/polymarket-agent/kill_lp.json"
 LOG_FILE    = "/opt/polymarket-agent/lp_quoter.log"
 
 # Re-quote if midpoint shifts more than this from our quoted price
-REBALANCE_THRESHOLD = 0.015   # 1.5 cents
+REBALANCE_THRESHOLD = 0.012   # 1.2 cents — tighter than before
 
 # Kill switch: if fills on one side exceed this USDC, stop quoting that market
-# Set high enough to allow normal fills (LP orders WILL get filled — that's fine)
-# This only triggers on runaway directional fills from a fast price move
 MAX_FILL_USDC_PER_SIDE = 600  # $600 — flags only if filled 3-4 full rounds one-way
 
 # Minimum USDC to keep as cash buffer (don't deploy everything)
 CASH_BUFFER = 100  # keep $100 free for autotrader
+
+# Order expiry: GTD orders auto-cancel after this many seconds
+# 70 min = just after next 4h cron run (prevents stale fills if bot crashes)
+ORDER_TTL_SECONDS = 70 * 60   # 4200 seconds
+
+# Activity guard: skip quoting if market traded within this many seconds
+# Avoids being adverse-selected during active price discovery
+ACTIVITY_GUARD_SECONDS = 180  # 3 minutes
+
+# Fill scaling thresholds: reduce size when fills are large
+FILL_SCALE_MEDIUM = 150  # reduce to 300sh if one-side fills exceed $150
+FILL_SCALE_HEAVY  = 300  # reduce to 200sh if one-side fills exceed $300
 
 # ── LP Markets — hardcoded token IDs from live API ───────────────────────────
 #
@@ -223,7 +236,9 @@ def place_buy(client, token_id, price, shares, label):
         args    = OrderArgs(token_id=token_id, price=price, size=round(shares, 2), side=BUY)
         opts    = PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk)
         signed  = client.create_order(args, opts)
-        receipt = client.post_order(signed, OrderType.GTC)
+        # GTD: auto-expires after ORDER_TTL_SECONDS — prevents stale fills on crash
+        expiry  = int(time.time()) + ORDER_TTL_SECONDS
+        receipt = client.post_order(signed, OrderType.GTD, expiration=expiry)
 
         if receipt.get("success"):
             oid = receipt.get("orderID", "?")
@@ -291,6 +306,41 @@ def run_market(client, mkt, state, open_orders, usdc_avail):
 
     log(f"[{label}] YES mid={yes_mid:.4f}  NO mid={no_mid:.4f}  pool=${mkt['pool_day']}/day")
 
+    # ── Activity guard: skip if market actively trading (price discovery) ────
+    try:
+        cid = mkt.get("condition_id","")
+        if cid:
+            act_r = requests.get(
+                f"https://data-api.polymarket.com/activity?market={cid}&limit=1",
+                timeout=8
+            )
+            if act_r.status_code == 200:
+                acts = act_r.json()
+                if acts:
+                    last_ts = acts[0].get("timestamp", 0)
+                    if isinstance(last_ts, (int, float)):
+                        age_sec = time.time() - last_ts
+                        if age_sec < ACTIVITY_GUARD_SECONDS:
+                            log(f"[{label}] Activity guard: traded {age_sec:.0f}s ago — skipping this cycle")
+                            state[label] = ms
+                            return state
+    except Exception:
+        pass  # guard failure → proceed normally
+
+    # ── Fill-based size scaling (EVPoly-inspired) ─────────────────────────────
+    yes_filled = float(ms.get("yes_filled_usdc", 0))
+    no_filled  = float(ms.get("no_filled_usdc",  0))
+    max_filled = max(yes_filled, no_filled)
+    base_target = mkt["target_shares"]
+    if max_filled > FILL_SCALE_HEAVY:
+        scaled_target = max(mkt["min_shares"], int(base_target * 0.4))   # 40% of normal
+        log(f"[{label}] Heavy fills (${max_filled:.0f}) — scaling to {scaled_target}sh")
+    elif max_filled > FILL_SCALE_MEDIUM:
+        scaled_target = max(mkt["min_shares"], int(base_target * 0.6))   # 60% of normal
+        log(f"[{label}] Medium fills (${max_filled:.0f}) — scaling to {scaled_target}sh")
+    else:
+        scaled_target = base_target
+
     # Check if rebalance needed
     prev_yes_mid = float(ms.get("yes_mid", -1))
     yes_has_order = bool(ms.get("yes_order_id"))
@@ -315,7 +365,7 @@ def run_market(client, mkt, state, open_orders, usdc_avail):
         time.sleep(0.5)
 
     # Check USDC cost: shares × price each side
-    target = mkt["target_shares"]
+    target = scaled_target
     yes_cost = target * yes_mid
     no_cost  = target * no_mid
     total_cost = yes_cost + no_cost
@@ -338,7 +388,12 @@ def run_market(client, mkt, state, open_orders, usdc_avail):
     #   - Near-certain markets (mid >80¢ or <20¢): pull back more (0.02)
     #     because the spread is extremely tight and midpoint ≈ best ask
     def safe_price(mid):
-        pullback = 0.02 if (mid > 0.80 or mid < 0.20) else 0.01
+        # EVPoly-inspired: place 1.5 ticks behind mid for fill protection.
+        # Reward score at 1.5¢ back = ((max_spread - 1.5) / max_spread)² = 0.44×
+        # Much safer than midpoint while still earning meaningful rewards.
+        # Near-certain markets (>80¢ or <20¢) need extra pullback because
+        # the spread is so tight that even 1.5¢ back may cross the book.
+        pullback = 0.03 if (mid > 0.80 or mid < 0.20) else 0.015
         return max(0.01, min(0.99, mid - pullback))
 
     yes_price = safe_price(yes_mid)
