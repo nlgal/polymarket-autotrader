@@ -225,8 +225,11 @@ def main():
         log("ERROR: Could not get nonce from any RPC")
         return
 
-    nonce = max(nonces.values())
-    log(f"Using nonce: {nonce} (max across {len(nonces)} RPCs)")
+    nonce = max(nonces.values()) if nonces else 9
+    # Fallback: if all RPCs fail or return wrong value, use known correct nonce
+    # SIGNER 0x7C67... has nonce 9 as of 2026-04-01. The nonce auto-increments
+    # so even if this is slightly stale, the RPC error will tell us the right value.
+    log(f"Using nonce: {nonce} (from {len(nonces)} RPCs; fallback=9)")
     gas_price = get_gas_price(rpc)
     gas_price_boosted = int(gas_price * 1.3)
 
