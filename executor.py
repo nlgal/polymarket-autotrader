@@ -130,6 +130,7 @@ ALLOWED_SCRIPTS = {
     "lp_farmer.py",
     "lp_quoter.py",
     "position_monitor.py",
+    "sell_ceasefire_apr30_yes.py",
     "merge_apr30.py",
     "write_chunk_0.py",
     "write_chunk_1.py",
