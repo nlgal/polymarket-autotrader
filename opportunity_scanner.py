@@ -427,71 +427,63 @@ def get_candidate_markets():
             "description": m.get("description","")[:400],
         })
     
-    # ── Inject priority watchlist markets (bypass yes_p filter) ────────────────
-    # These are 0%-fee geopolitical NO plays that the yes_p<0.06 gate would skip.
-    priority_cids = {w.get("condition_id","") for w in PRIORITY_WATCHLIST if w.get("condition_id")}
+    # ── Inject priority watchlist markets using CLOB token IDs directly ─────────
+    # Gamma search doesn't support exact condition_id lookup.
+    # Use known token IDs to fetch live YES price from CLOB midpoint endpoint.
+    existing_cids = {c.get("conditionId","") for c in candidates}
     for wm in PRIORITY_WATCHLIST:
-        # Skip if already in candidates
-        wm_cid = wm.get("condition_id","")
-        if wm_cid and any(c.get("conditionId","") == wm_cid for c in candidates):
-            continue  # already found via volume sort
-        # Find in the raw markets list by condition_id or label_match
-        label_match = wm.get("label_match","")
-        matched = None
-        for m in markets:
-            m_cid   = m.get("conditionId","")
-            m_q     = m.get("question","").lower()
-            if (wm_cid and m_cid == wm_cid) or (label_match and label_match in m_q):
-                matched = m
-                break
-        if not matched:
-            # Fetch directly via gamma if not in top-100 volume
-            if wm_cid:
-                try:
-                    resp = requests.get(
-                        f"https://gamma-api.polymarket.com/markets?condition_id={wm_cid}",
-                        timeout=8
-                    ).json()
-                    if isinstance(resp, list) and resp:
-                        matched = resp[0]
-                    elif isinstance(resp, dict):
-                        matched = resp
-                except Exception:
-                    pass
-        if not matched:
+        wm_cid    = wm.get("condition_id","")
+        yes_token = wm.get("yes_token","")
+        no_token  = wm.get("no_token","")
+        label     = wm.get("label", "")
+
+        # Skip if already captured by volume sort
+        if wm_cid and wm_cid in existing_cids:
             continue
-        liq  = float(matched.get("liquidity") or 0)
-        end  = matched.get("endDate","")
+
+        # Must have token IDs to proceed
+        if not yes_token:
+            continue
+
+        # Fetch live YES price from CLOB
         try:
-            prices = json.loads(matched.get("outcomePrices","[]"))
-            yes_p  = float(prices[0])
-        except:
-            yes_p = 0.10  # default if not parseable
-        # Skip if already resolved or ends within 1h
-        if end:
-            try:
-                end_dt = datetime.datetime.fromisoformat(end.replace("Z",""))
-                if (end_dt - datetime.datetime.utcnow()).total_seconds() < 3600:
-                    continue
-            except: pass
-        toks = []
+            mid_r = requests.get(
+                f"https://clob.polymarket.com/midpoint?token_id={yes_token}",
+                timeout=6
+            ).json()
+            yes_p = float(mid_r.get("mid", 0))
+        except Exception:
+            yes_p = 0.05  # fallback
+
+        # Skip if price is 0 (market resolved or inactive)
+        if yes_p <= 0:
+            continue
+
+        # Fetch liquidity from order book
         try:
-            toks = json.loads(matched.get("clobTokenIds","[]") or "[]")
-        except: pass
-        # Use watchlist tokens if gamma didn't return them
-        if not toks and wm.get("yes_token"):
-            toks = [wm["yes_token"], wm.get("no_token","")]
+            book = requests.get(
+                f"https://clob.polymarket.com/book?token_id={yes_token}",
+                timeout=6
+            ).json()
+            bid_liq = sum(float(b.get("size",0)) * float(b.get("price",0))
+                          for b in book.get("bids",[])[:10])
+            ask_liq = sum(float(a.get("size",0)) * float(a.get("price",0))
+                          for a in book.get("asks",[])[:10])
+            liq = round(bid_liq + ask_liq, 0)
+        except Exception:
+            liq = 10000  # assume liquid if book fetch fails
+
         candidates.append({
-            "question":      matched.get("question", wm["label"]),
-            "yes_p":         yes_p,
-            "no_p":          1 - yes_p,
-            "liquidity":     liq,
-            "volume24h":     float(matched.get("volume24hr") or 0),
-            "conditionId":   matched.get("conditionId", wm_cid),
-            "clob_token_ids": toks,
-            "endDate":       end,
-            "description":   matched.get("description","")[:400],
-            "priority":      True,  # flag for downstream logic
+            "question":       label,
+            "yes_p":          yes_p,
+            "no_p":           1 - yes_p,
+            "liquidity":      liq,
+            "volume24h":      0,
+            "conditionId":    wm_cid,
+            "clob_token_ids": [yes_token, no_token] if no_token else [yes_token],
+            "endDate":        "",
+            "description":    f"Priority watchlist: {label}. 0% fee geopolitical market.",
+            "priority":       True,
         })
 
     return sorted(candidates, key=lambda x: (not x.get("priority",False), -x["volume24h"]))[:30]
