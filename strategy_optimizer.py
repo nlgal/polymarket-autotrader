@@ -99,8 +99,7 @@ def load_failure_summary(limit=20):
     for mod, pnl in sorted(module_pnl.items(), key=lambda x: x[1]):
         lines.append(f"  • [{mod}] total PnL: ${pnl:+.0f}")
 
-    return "
-".join(lines), mode_counts
+    return "\n".join(lines), mode_counts
 
 # ── Default config (written if missing) ──────────────────────────────────────
 DEFAULT_CONFIG = {
@@ -734,16 +733,15 @@ def main():
             log(f"Config v{new_cfg['version']} saved and applied to scanner")
 
             # Include top failure mode in Telegram if present
-        _failure_sum, _fmodes = load_failure_summary(limit=20)
-        _top_mode = sorted(_fmodes.items(), key=lambda x: -x[1])[0][0] if _fmodes else "none"
-        tg(f"""<b>🔬 Optimizer: IMPROVEMENT</b>
-Score: {current_score:.1f} → {new_score:.1f} (+{new_score - current_score:.1f})
+            _failure_sum, _fmodes = load_failure_summary(limit=20)
+            _top_mode = sorted(_fmodes.items(), key=lambda x: -x[1])[0][0] if _fmodes else "none"
+            tg(f"""<b>\U0001f52c Optimizer: IMPROVEMENT</b>
+Score: {current_score:.1f} | {new_details.get('win_rate')}% win rate
 
-<b>Tweak:</b> {tweak.get('parameter')} = {tweak.get('old_value')} → {tweak.get('new_value')}
-<b>Reason:</b> {tweak.get('reasoning', '')[:120]}
+Tweak: {tweak.get('parameter')} = {tweak.get('old_value')} to {tweak.get('new_value')}
+Reason: {tweak.get('reasoning', '')[:120]}
 
-<b>Stats:</b> {new_details.get('n_trades')} trades | {new_details.get('win_rate')}% win rate | avg {new_details.get('avg_pnl_pct'):+.0f}% per trade
-<b>Top failure mode:</b> <code>{_top_mode}</code>""")
+Top failure mode: {_top_mode}""")
         else:
             log(f"❌ Could not write to scanner: {msg}")
     else:
