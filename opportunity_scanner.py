@@ -62,6 +62,45 @@ MIN_LIQUIDITY    = 50000  # $50k minimum liquidity
 MAX_TRADE_SIZE   = 150    # Raised from $75: capital base $4,700 — 3.2% per trade
 MIN_TRADE_SIZE   = 50
 UW_EDGE_DISCOUNT = 0.20   # Lower edge threshold by 20% when UW insider/whale signal present
+
+# ── Priority watchlist: markets to score regardless of yes_p filter ────────────
+# These are 0%-fee geopolitical contracts where NO edge is structural.
+# Bypass the yes_p < 0.06 gate — scanner would otherwise skip them entirely.
+PRIORITY_WATCHLIST = [
+    # US x Iran ceasefire by April 7
+    {
+        "condition_id": "0x4c5701bcde0b8fb7d7f48c8e9d20245a6caa58c61a77f981fad98f2bfa0b1bc7",
+        "label": "Ceasefire Apr7",
+        "yes_token": "82855088893985825781350466813737280564000275725006328179621744619327480699369",
+        "no_token":  "55194745453074297560900438908357749978780021444937743754846798173575377021411",
+    },
+    # US x Iran ceasefire by April 15
+    {
+        "condition_id": "0x773abaa5fe55e5cde51a261f444b7921652a4e059ead6b3be9fe56499c2d4609",
+        "label": "Ceasefire Apr15",
+        "yes_token": "85191934649046129480174964255278880752271767733539167443243111973456166096127",
+        "no_token":  "8442709013751543525223072638303914942960068246422295030411662679470140144155",
+    },
+    # US x Iran ceasefire by April 30
+    {
+        "condition_id": "0x80059ff4e694f878c0498f6f3a067ee7ca62dc2fc46251a4287b58355ce47bc5",
+        "label": "Ceasefire Apr30",
+        "yes_token": "44149007410374101286260953227333745102128417138356632089802983317837574022801",
+        "no_token":  "52284848830940446862370529859386043059769275594386884690262695607365719243018",
+    },
+    # US x Iran ceasefire by May 31
+    {
+        "condition_id": "",  # fetch dynamically — label match fallback
+        "label": "Ceasefire May31",
+        "label_match": "ceasefire by may 31",
+    },
+    # Trump announces end of military operations against Iran
+    {
+        "condition_id": "",
+        "label": "Trump ends Iran ops",
+        "label_match": "trump announces end of military operations against iran",
+    },
+]
 ALREADY_IN_FILE  = "/opt/polymarket-agent/intelligence/existing_positions.json"
 SCAN_LOG         = "/opt/polymarket-agent/opportunity_scan.log"
 SCAN_SCORE_CACHE_TTL = 7200  # 2 hours — skip re-scoring if price unchanged
@@ -346,7 +385,12 @@ def get_candidate_markets():
             continue
         
         # Skip near-certain or coin-flip with no news signal
-        if yes_p > 0.94 or yes_p < 0.06:
+        is_priority = any(
+            (w.get("condition_id") and w["condition_id"] == m.get("conditionId","")) or
+            (w.get("label_match") and w["label_match"] in m.get("question","").lower())
+            for w in PRIORITY_WATCHLIST
+        )
+        if not is_priority and (yes_p > 0.94 or yes_p < 0.06):
             continue
         
         q = m.get("question","")
@@ -383,7 +427,74 @@ def get_candidate_markets():
             "description": m.get("description","")[:400],
         })
     
-    return sorted(candidates, key=lambda x: x["volume24h"], reverse=True)[:25]
+    # ── Inject priority watchlist markets (bypass yes_p filter) ────────────────
+    # These are 0%-fee geopolitical NO plays that the yes_p<0.06 gate would skip.
+    priority_cids = {w.get("condition_id","") for w in PRIORITY_WATCHLIST if w.get("condition_id")}
+    for wm in PRIORITY_WATCHLIST:
+        # Skip if already in candidates
+        wm_cid = wm.get("condition_id","")
+        if wm_cid and any(c.get("conditionId","") == wm_cid for c in candidates):
+            continue  # already found via volume sort
+        # Find in the raw markets list by condition_id or label_match
+        label_match = wm.get("label_match","")
+        matched = None
+        for m in markets:
+            m_cid   = m.get("conditionId","")
+            m_q     = m.get("question","").lower()
+            if (wm_cid and m_cid == wm_cid) or (label_match and label_match in m_q):
+                matched = m
+                break
+        if not matched:
+            # Fetch directly via gamma if not in top-100 volume
+            if wm_cid:
+                try:
+                    resp = requests.get(
+                        f"https://gamma-api.polymarket.com/markets?condition_id={wm_cid}",
+                        timeout=8
+                    ).json()
+                    if isinstance(resp, list) and resp:
+                        matched = resp[0]
+                    elif isinstance(resp, dict):
+                        matched = resp
+                except Exception:
+                    pass
+        if not matched:
+            continue
+        liq  = float(matched.get("liquidity") or 0)
+        end  = matched.get("endDate","")
+        try:
+            prices = json.loads(matched.get("outcomePrices","[]"))
+            yes_p  = float(prices[0])
+        except:
+            yes_p = 0.10  # default if not parseable
+        # Skip if already resolved or ends within 1h
+        if end:
+            try:
+                end_dt = datetime.datetime.fromisoformat(end.replace("Z",""))
+                if (end_dt - datetime.datetime.utcnow()).total_seconds() < 3600:
+                    continue
+            except: pass
+        toks = []
+        try:
+            toks = json.loads(matched.get("clobTokenIds","[]") or "[]")
+        except: pass
+        # Use watchlist tokens if gamma didn't return them
+        if not toks and wm.get("yes_token"):
+            toks = [wm["yes_token"], wm.get("no_token","")]
+        candidates.append({
+            "question":      matched.get("question", wm["label"]),
+            "yes_p":         yes_p,
+            "no_p":          1 - yes_p,
+            "liquidity":     liq,
+            "volume24h":     float(matched.get("volume24hr") or 0),
+            "conditionId":   matched.get("conditionId", wm_cid),
+            "clob_token_ids": toks,
+            "endDate":       end,
+            "description":   matched.get("description","")[:400],
+            "priority":      True,  # flag for downstream logic
+        })
+
+    return sorted(candidates, key=lambda x: (not x.get("priority",False), -x["volume24h"]))[:30]
 
 def load_claude_md():
     """Load CLAUDE.md + lessons.md + HARD_RULES.md for full trading context."""
