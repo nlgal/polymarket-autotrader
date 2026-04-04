@@ -90,15 +90,27 @@ PRIORITY_WATCHLIST = [
     },
     # US x Iran ceasefire by May 31
     {
-        "condition_id": "",  # fetch dynamically — label match fallback
+        "condition_id": "",
         "label": "Ceasefire May31",
         "label_match": "ceasefire by may 31",
+    },
+    # US x Iran ceasefire by June 30
+    {
+        "condition_id": "",
+        "label": "Ceasefire Jun30",
+        "label_match": "ceasefire by june 30",
     },
     # Trump announces end of military operations against Iran
     {
         "condition_id": "",
         "label": "Trump ends Iran ops",
         "label_match": "trump announces end of military operations against iran",
+    },
+    # US forces enter Iran by April 30 (YES directional — we hold this)
+    {
+        "condition_id": "",
+        "label": "Forces Apr30",
+        "label_match": "us forces enter iran by april 30",
     },
 ]
 ALREADY_IN_FILE  = "/opt/polymarket-agent/intelligence/existing_positions.json"
