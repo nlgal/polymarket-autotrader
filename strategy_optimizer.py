@@ -127,6 +127,89 @@ SPORTS_KEYWORDS = ["vs.", "vs ", "match", "game", "championship", "tournament",
                    "playoff", "cup", "league", "bowl", "series"]
 
 
+def load_constitution_targets():
+    """
+    Read OPERATING_CONSTITUTION.md and extract the target allocation section
+    and hard rules for injection into Claude prompts.
+    Returns a compact string. Fails silently if file missing.
+    """
+    path = os.path.join(AGENT_DIR, "OPERATING_CONSTITUTION.md")
+    if not os.path.exists(path):
+        # Try to pull from GitHub
+        try:
+            _r = requests.get(
+                "https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/OPERATING_CONSTITUTION.md",
+                timeout=8
+            )
+            if _r.status_code == 200:
+                _text = _r.text
+            else:
+                return "(OPERATING_CONSTITUTION.md not found)"
+        except Exception:
+            return "(OPERATING_CONSTITUTION.md not reachable)"
+    else:
+        with open(path) as f:
+            _text = f.read()
+
+    # Extract key sections by header
+    sections = {}
+    current_header = None
+    current_lines  = []
+    for line in _text.split("\n"):
+        if line.startswith("## ") or line.startswith("# "):
+            if current_header:
+                sections[current_header] = "\n".join(current_lines).strip()
+            current_header = line.lstrip("# ").strip()
+            current_lines  = []
+        else:
+            current_lines.append(line)
+    if current_header:
+        sections[current_header] = "\n".join(current_lines).strip()
+
+    # Extract allocation targets + objective function + hard rules
+    targets = []
+
+    # Primary objective
+    obj = sections.get("Primary Objective Function", "")
+    if obj:
+        # Get just the code block
+        idx = obj.find("Expected Log Growth")
+        if idx != -1:
+            targets.append("PRIMARY OBJECTIVE: " + obj[idx:idx+200].split("\n\n")[0].replace("\n", " | "))
+
+    # Step 1 portfolio governor rules
+    gov = sections.get("Master Decision Hierarchy (Every Cycle)", "") or           sections.get("STEP 1: PORTFOLIO GOVERNOR", "") or           sections.get("STEP 1 — Portfolio Governor", "")
+    if not gov:
+        # Try to find it in the text directly
+        idx = _text.find("target_allocations")
+        if idx != -1:
+            gov_chunk = _text[idx:idx+400]
+            targets.append("CONSTITUTION ALLOCATION TARGETS:\n" + gov_chunk[:300])
+
+    # System parameters table
+    params_idx = _text.find("## System Parameters")
+    if params_idx != -1:
+        params_chunk = _text[params_idx:params_idx+600]
+        # Extract key rows
+        for line in params_chunk.split("\n"):
+            if any(k in line for k in ["MIN_TRADE", "BUFFER", "MAX_PORTFOLIO", "CONFLICT", "LP conflict", "LP order"]):
+                targets.append("  " + line.strip().strip("|").strip())
+
+    # Hard rules (just the numbered list)
+    hard_idx = _text.find("## Global Hard Rules")
+    if hard_idx != -1:
+        hard_chunk = _text[hard_idx:hard_idx+1200]
+        hard_lines = [l for l in hard_chunk.split("\n")
+                      if l.strip().startswith("|") and any(c.isdigit() for c in l[:5])]
+        if hard_lines:
+            targets.append("HARD RULES (never violate):")
+            targets.extend(["  " + l.strip().strip("|").strip() for l in hard_lines[:6]])
+
+    if targets:
+        return "\n".join(targets)
+    return "(constitution loaded but target sections not parsed — check file format)"
+
+
 def tg(msg):
     if TG_TOKEN and TG_CHAT:
         try:
@@ -316,6 +399,9 @@ def propose_tweak(cfg, trade_history, current_score, history):
     # Load failure mode traces from post_trade_review.jsonl
     failure_summary, failure_modes = load_failure_summary(limit=20)
 
+    # Load constitution allocation targets and hard rules
+    constitution_targets = load_constitution_targets()
+
     # Flag repeated failure modes for Claude to target specifically
     repeated_flags = []
     for mode, count in sorted(failure_modes.items(), key=lambda x: -x[1]):
@@ -347,10 +433,15 @@ FAILURE MODE ANALYSIS (from post_trade_review traces):
 
 {repeated_section}
 
+OPERATING CONSTITUTION TARGETS (non-negotiable — proposals must comply):
+{constitution_targets}
+
 TASK: Propose ONE specific parameter change to improve the score.
 If a failure mode appears 3+ times, explain which parameter change would reduce it.
 If the repeated failure modes suggest a structural issue (not a threshold problem),
 say so in the reasoning — the system can add a guardrail instead.
+Any proposed parameter change MUST be consistent with the constitution targets above.
+Do not propose changes that would violate hard rules (e.g. cash below BUFFER_CASH).
 Rules:
 - Only suggest changing ONE parameter at a time
 - The change must be data-driven (explain why based on winning/losing patterns)
@@ -543,6 +634,9 @@ def auto_dream():
 
     equity, positions = get_current_positions()
     news = get_latest_news()
+    # Load constitution targets for embedding in CLAUDE.md
+    _const_raw = load_constitution_targets()
+    constitution_section = _const_raw if _const_raw else "(OPERATING_CONSTITUTION.md not found)"
     now_str = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
     # Format portfolio table
@@ -654,6 +748,9 @@ Autonomous Polymarket prediction market trader on Polygon blockchain.
 - MIN_SCAN_EDGE = 0.15 (15% mispricing required)
 - MAX_TRADE_SIZE = $75
 - UW_EDGE_DISCOUNT = 0.20 (lowers threshold to 12% with insider/whale signal)
+
+## Operating Constitution — Allocation Targets
+{constitution_section}
 
 ## The One Rule That Matters Most
 "The status quo is almost always the correct prediction for near-term conflict markets.
