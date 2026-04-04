@@ -1927,12 +1927,24 @@ def _pre_trade_checklist(market, action, source="unknown"):
         return False, (f"[PREFLIGHT] Fee market at extreme price: YES={yes_p:.3f}. "
                        f"Lottery ticket or already decided. Source={source}")
 
-    # ── Check 2: Fee market not in approved category and not sports ───────────
-    # If it's a fee market and neither sports nor approved geo/macro → no edge.
-    # Man City: is_fee=True, is_sports=False, is_approved=False → blocked here.
+    # ── Check 2: Fee market not in approved category — require catalyst ─────────
+    # If it's a fee market and neither sports nor approved geo/macro, we need
+    # a reason to be there: a whale signal or news catalyst in the market data.
+    # Without one, there is no edge reason vs the market price.
+    # With one, pass to scorer and let it decide.
+    # Man City: is_fee=True, is_sports=False, is_approved=False, no catalyst → BLOCKED.
+    # Ivory Coast at 28¢ + whale signal: is_fee=True, not approved, BUT has catalyst → ALLOWED.
     if is_fee and not is_sports_market(q) and not is_approved_category(q):
-        return False, (f"[PREFLIGHT] Fee market not in approved category: '{q[:55]}'. "
-                       f"No proven edge outside geo/macro/sports. Source={source}")
+        has_whale    = bool(market.get("_whale_signal") or market.get("_has_whale"))
+        has_news     = bool(market.get("_has_rss") or market.get("_has_pplx") or
+                           market.get("news_catalyst") or market.get("_uw_yes_sig") or
+                           market.get("_uw_no_sig"))
+        has_catalyst = has_whale or has_news
+        if not has_catalyst:
+            return False, (f"[PREFLIGHT] Fee market not in approved category and no catalyst: "
+                           f"'{q[:55]}'. Need whale signal or news to trade here. Source={source}")
+        # Has catalyst — log it and allow through to scorer
+        log(f"  [PREFLIGHT] Fee/uncategorized market with catalyst — allowing scorer: {q[:50]}", Fore.CYAN)
 
     # ── Check 3: Sports market price sanity ──────────────────────────────────
     # Sports market buying YES < 0.25 = lottery ticket even if keywords matched.
