@@ -558,6 +558,23 @@ SPORTS_KEYWORDS = [
     "nba finals", "nhl playoffs", "nba playoffs",
     "premier league", "la liga", "serie a", "ligue 1", "bundesliga",
     "wimbledon", "french open", "us open tennis", "australian open",
+    # Soccer clubs (Premier League, Champions League, international)
+    "manchester city", "manchester united", "liverpool fc", "chelsea fc",
+    "arsenal fc", "tottenham", "newcastle", "aston villa", "west ham",
+    "barcelona", "real madrid", "atletico madrid", "sevilla",
+    "juventus", "inter milan", "ac milan", "napoli", "roma",
+    "psg", "paris saint-germain", "lyon", "marseille",
+    "bayern munich", "dortmund", "rb leipzig", "bayer leverkusen",
+    "ajax", "benfica", "porto", "celtic", "rangers",
+    "champions league", "europa league", "conference league",
+    "fa cup", "carabao cup", "copa del rey", "dfb-pokal",
+    # Generic match patterns — catches "Will X FC win on YYYY-MM-DD?"
+    " fc win", "win on 202", "vs.", " o/u ", "over/under",
+    "match winner", "both teams to score", "clean sheet",
+    # Tennis / golf / cycling / formula 1
+    "formula 1", "f1 grand prix", "tour de france", "giro d'italia",
+    "pga tour", "lpga", "ryder cup", "masters tournament",
+    "atp ", "wta ",
     # NBA teams
     "timberwolves", "warriors", "lakers", "celtics", "bulls", "clippers",
     "knicks", "pacers", "bucks", "cavaliers", "76ers", "nuggets", "spurs",
@@ -1390,6 +1407,9 @@ def score_market(market, mode="NORMAL"):
             "Lesson 11: BTC $65k dip NO — bought when BTC was 1.8% above trigger",
         "0x4290a4aa43a0707f0f1193c73667074f2ef5ce8ab5d6fcdd4ca645bfe1528f03":
             "Lesson 11: BTC $60k dip YES — needs 10% drop in 4 days",
+        # Sports match-day single game markets — blocked permanently after Man City loss
+        # "win on YYYY-MM-DD" markets are game-day binary bets with 0.75% fee
+        # Man City FC YES at 0.12 → $150 loss. Never again.
     }
     _mkt_condition = market.get("condition_id", market.get("conditionId", ""))
     if _mkt_condition in _AUTOTRADER_BLACKLIST:
@@ -1397,6 +1417,28 @@ def score_market(market, mode="NORMAL"):
         log(f"  [BLACKLISTED] {market.get('question','')[:55]} — {reason[:50]}", Fore.RED)
         return {**market, "action": "PASS", "edge": 0, "confidence": "low",
                 "reasoning": f"BLACKLISTED: {reason}"}
+
+    # ── FEE-MARKET PRICE GUARD — catch any sports/crypto that bypassed keyword gate ─
+    # Man City FC win on 2026-04-04 slipped through because "manchester" wasn't in
+    # SPORTS_KEYWORDS. This guard catches any fee market at price extremes.
+    if is_fee_enabled_market(market):
+        try:
+            _prices_raw = market.get("outcomePrices", "[0.5,0.5]")
+            if isinstance(_prices_raw, str):
+                _prices_list = [float(x.strip().strip('"')) for x in _prices_raw.strip("[]").split(",")]
+            else:
+                _prices_list = [float(x) for x in _prices_raw]
+            _yes_guard = _prices_list[0] if _prices_list else 0.5
+        except Exception:
+            _yes_guard = 0.5
+        if _yes_guard < 0.20:
+            log(f"  [FEE-GUARD] {market.get('question','')[:50]} YES={_yes_guard:.3f} < 0.20 — lottery ticket blocked", Fore.YELLOW)
+            return {**market, "action": "PASS", "edge": 0, "confidence": "low",
+                    "reasoning": f"Fee-market price guard: YES={_yes_guard:.3f} < 0.20 — lottery ticket. Constitution Rule 4: no local optimization that harms total system. Man City lesson."}
+        if _yes_guard > 0.83:
+            log(f"  [FEE-GUARD] {market.get('question','')[:50]} YES={_yes_guard:.3f} > 0.83 — market decided, no edge", Fore.YELLOW)
+            return {**market, "action": "PASS", "edge": 0, "confidence": "low",
+                    "reasoning": f"Fee-market price guard: YES={_yes_guard:.3f} > 0.83 — market already decided. No edge at extremes."}
 
     # ── COMMODITY PRICE REALITY CHECK — no trading near the trigger ────────────
     def _get_live_price(symbol):
