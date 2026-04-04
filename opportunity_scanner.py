@@ -1082,8 +1082,14 @@ def main():
                 _gate_answer = claude_call(_gate_prompt, max_tokens=5).strip().upper()
                 log(f"  [GATE] {q[:45]} → {_gate_answer}")
                 if _gate_answer == "NO" or "NO" in _gate_answer:
-                    _skip_to_pass = True
-                    action, edge, reasoning = "PASS", 0.0, "fast-reject gate: no edge signal"
+                    if _is_priority_mkt:
+                        # Priority market: gate says NO = GOOD for us (NO position)
+                        # Don't skip — proceed to full bull/bear scoring
+                        log(f"  [PRIORITY] {q[:45]} — gate→NO, proceeding to full score")
+                        _skip_to_pass = False
+                    else:
+                        _skip_to_pass = True
+                        action, edge, reasoning = "PASS", 0.0, "fast-reject gate: no edge signal"
 
             if not _skip_to_pass:
                 # Tiered scoring:
