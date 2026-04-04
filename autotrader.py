@@ -1905,9 +1905,70 @@ def score_batch(markets, mode="NORMAL"):
 
 # ── Executor ──────────────────────────────────────────────────────────────────
 
+def _pre_trade_checklist(market, action, source="unknown"):
+    """
+    Single chokepoint called by place_trade() before any order touches the wire.
+    Runs 5 cross-checks. Returns (ok: bool, reason: str).
+
+    The Man City lesson: individual gates (sports keyword, category whitelist,
+    fee guard) can each be bypassed by different code paths. This runs all
+    checks in one place regardless of which path called place_trade().
+    """
+    q        = market.get("question", "")
+    yes_p    = float(market.get("yes_price", 0.5) or 0.5)
+    no_p     = float(market.get("no_price", 0.5) or 0.5)
+    trade_p  = yes_p if action == "BUY_YES" else no_p
+    is_fee   = is_fee_enabled_market(market)
+
+    # ── Check 1: Fee market at extreme price ──────────────────────────────────
+    # Any fee market with YES < 0.20 or YES > 0.83 → lottery ticket or decided.
+    # Man City was YES=0.12, fee market → blocked here.
+    if is_fee and (yes_p < 0.20 or yes_p > 0.83):
+        return False, (f"[PREFLIGHT] Fee market at extreme price: YES={yes_p:.3f}. "
+                       f"Lottery ticket or already decided. Source={source}")
+
+    # ── Check 2: Fee market not in approved category and not sports ───────────
+    # If it's a fee market and neither sports nor approved geo/macro → no edge.
+    # Man City: is_fee=True, is_sports=False, is_approved=False → blocked here.
+    if is_fee and not is_sports_market(q) and not is_approved_category(q):
+        return False, (f"[PREFLIGHT] Fee market not in approved category: '{q[:55]}'. "
+                       f"No proven edge outside geo/macro/sports. Source={source}")
+
+    # ── Check 3: Sports market price sanity ──────────────────────────────────
+    # Sports market buying YES < 0.25 = lottery ticket even if keywords matched.
+    if is_sports_market(q) and action == "BUY_YES" and yes_p < 0.25:
+        return False, (f"[PREFLIGHT] Sports BUY_YES at {yes_p:.3f} < 0.25. "
+                       f"Lottery ticket. Source={source}")
+    if is_sports_market(q) and action == "BUY_NO" and no_p < 0.25:
+        return False, (f"[PREFLIGHT] Sports BUY_NO at {no_p:.3f} < 0.25. "
+                       f"Market already decided. Source={source}")
+
+    # ── Check 4: Match-day single game market ────────────────────────────────
+    # "win on YYYY-MM-DD" = game-day binary, toxic regardless of keyword match.
+    import re as _re
+    if _re.search(r"win on \d{4}-\d{2}-\d{2}", q.lower()):
+        return False, (f"[PREFLIGHT] Match-day single game: '{q[:55]}'. "
+                       f"Game-day binary blocked. Source={source}")
+
+    # ── Check 5: Trade price too extreme on any market ───────────────────────
+    # Buying YES < 0.05 or NO < 0.05 means paying 5¢ for a near-zero payout.
+    # No market has edge at these extremes — it's either resolved or impossible.
+    if trade_p < 0.05:
+        return False, (f"[PREFLIGHT] Trade price {trade_p:.3f} < 0.05. "
+                       f"Near-zero payout. Source={source}")
+
+    return True, "ok"
+
+
 def place_trade(client, market, action, size_usdc):
     from py_clob_client.order_builder.constants import BUY
     from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+
+    # ── Pre-trade checklist: runs regardless of which code path called us ─────
+    _ok, _reason = _pre_trade_checklist(market, action, source="place_trade")
+    if not _ok:
+        log(_reason, Fore.YELLOW)
+        return None
 
     if action == "BUY_YES":
         token_id = market.get("yes_token_id")
