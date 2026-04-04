@@ -984,9 +984,14 @@ def main():
                 _pre_pass = False
                 _pre_reason = f"coin-flip ({yes_p:.2f}) no signal"
         
-        # Rule 2: Near-certain markets (>92¢ or <8¢) — skip (already handled by get_candidate_markets
-        # but re-check here since UW-boosted markets may slip through)
-        if yes_p > 0.93 or yes_p < 0.07:
+        # Rule 2: Near-certain markets (>92¢ or <8¢) — skip unless in priority watchlist
+        # Priority markets (0%-fee geopolitical NO plays) bypass this gate.
+        _is_priority_mkt = mkt.get("priority", False) or any(
+            (w.get("condition_id") and w["condition_id"] == mkt.get("conditionId","")) or
+            (w.get("label_match") and w["label_match"] in q.lower())
+            for w in PRIORITY_WATCHLIST
+        )
+        if not _is_priority_mkt and (yes_p > 0.93 or yes_p < 0.07):
             _pre_pass = False
             _pre_reason = f"near-certain ({yes_p:.2f}) — no edge"
         
