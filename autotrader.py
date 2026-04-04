@@ -748,8 +748,8 @@ def check_sports_eligibility(market: dict, state: dict, equity: float) -> tuple:
 
     return True, "ok"
 
-SIZE_MIN        = {"NORMAL": 50,    "RECOVERY": 25,    "EXPANSION": 75,     "PAUSED": 0}
-SIZE_MAX        = {"NORMAL": 150,   "RECOVERY": 75,    "EXPANSION": 200,    "PAUSED": 0}
+SIZE_MIN        = {"NORMAL": 75,    "RECOVERY": 50,    "EXPANSION": 100,    "PAUSED": 0}
+SIZE_MAX        = {"NORMAL": 200,   "RECOVERY": 100,   "EXPANSION": 300,    "PAUSED": 0}
 
 # Drawdown thresholds
 DD_RECOVERY   = 0.10   # enter Recovery if drawdown from peak >= 10%
@@ -1875,7 +1875,7 @@ def calculate_size(edge, mode, equity_now, deployed, market_price=0.5, source_co
     At small balances (<$5k) we use fixed SIZE_MIN/MAX directly so trades always fire.
     """
     # Hard cap: never deploy more than MAX_PORTFOLIO_EXPOSURE total
-    MAX_PORTFOLIO_EXPOSURE = int(__import__('os').environ.get('MAX_PORTFOLIO_EXPOSURE', '2500'))
+    MAX_PORTFOLIO_EXPOSURE = int(__import__('os').environ.get('MAX_PORTFOLIO_EXPOSURE', '4000'))
     remaining_capacity = MAX_PORTFOLIO_EXPOSURE - deployed
     if remaining_capacity < SIZE_MIN[mode]:
         return 0

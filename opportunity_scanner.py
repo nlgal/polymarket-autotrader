@@ -59,8 +59,8 @@ UW_BASE       = "https://api.unusualwhales.com"
 
 MIN_SCAN_EDGE    = 0.15   # Raised from 0.12 — only very high conviction trades's 0.07 — only obvious mispricings
 MIN_LIQUIDITY    = 50000  # $50k minimum liquidity
-MAX_TRADE_SIZE   = 75     # Max USDC per trade — capped to reduce loss per bad bet
-MIN_TRADE_SIZE   = 35
+MAX_TRADE_SIZE   = 150    # Raised from $75: capital base $4,700 — 3.2% per trade
+MIN_TRADE_SIZE   = 50
 UW_EDGE_DISCOUNT = 0.20   # Lower edge threshold by 20% when UW insider/whale signal present
 ALREADY_IN_FILE  = "/opt/polymarket-agent/intelligence/existing_positions.json"
 SCAN_LOG         = "/opt/polymarket-agent/opportunity_scan.log"

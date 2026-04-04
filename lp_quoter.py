@@ -43,7 +43,7 @@ LOG_FILE    = "/opt/polymarket-agent/lp_quoter.log"
 REBALANCE_THRESHOLD = 0.012   # 1.2 cents — tighter than before
 
 # Kill switch: if fills on one side exceed this USDC, stop quoting that market
-MAX_FILL_USDC_PER_SIDE = 600  # $600 — flags only if filled 3-4 full rounds one-way
+MAX_FILL_USDC_PER_SIDE = 2000  # raised from 600: Tehran rejected ceasefire today, NO fills at 90¢ are profitable inventory  # $600 — flags only if filled 3-4 full rounds one-way
 
 # Minimum USDC to keep as cash buffer (don't deploy everything)
 CASH_BUFFER = 100  # keep $100 free for autotrader
@@ -113,7 +113,7 @@ LP_MARKETS = [
         "min_shares":  200,
         "target_shares": 500,
         "pool_day":    169,
-        "enabled":     False,   # enable once Apr30 validated
+        "enabled":     True,    # enabled: capital available, Apr30 validated
     },
 ]
 
