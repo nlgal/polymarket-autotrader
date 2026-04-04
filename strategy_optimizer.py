@@ -514,6 +514,103 @@ def apply_tweak(cfg, tweak):
     return new_cfg
 
 
+def validate_tweak_against_constitution(cfg, tweak):
+    """
+    Check proposed tweak against the 6 hard rules before running score simulation.
+    Returns (is_valid: bool, violations: list[str])
+
+    Hard rules enforced here (from OPERATING_CONSTITUTION.md):
+      1. LP must never consume capital that prevents acting on high-conviction trades
+         → max_trade_size must stay >= MIN_TRADE_CASH ($150)
+      2. Never optimize solely for win rate
+         → reject if reasoning contains only win-rate language with no EV mention
+      3. Never assume correlated evidence is independent confirmation
+         → reject if proposed edge threshold drops below 0.08 (too permissive)
+      4. Never let one sub-agent optimize locally in a way that harms total-system
+         → reject if change increases concentration risk (max_trade_size > $250)
+      5. Never keep quoting when market conditions are clearly toxic
+         → reject if coin_flip_band widens beyond [0.38, 0.62] (too permissive)
+      6. Preserve optionality — cash and flexibility have value
+         → reject if min_trade_size drops below $25 (erodes cash discipline)
+      7. MIN_TRADE_CASH floor: $150 (constitution system parameter)
+         → reject if max_trade_size < 150
+      8. BUFFER_CASH floor: $100
+         → reject if min_trade_size < 25 (proxy for cash discipline erosion)
+    """
+    new_cfg    = {**cfg, **{tweak.get("parameter"): tweak.get("new_value")}}
+    param      = tweak.get("parameter", "")
+    new_val    = tweak.get("new_value")
+    reasoning  = tweak.get("reasoning", "").lower()
+    violations = []
+
+    # Rule 1 / Rule 7: max_trade_size must stay >= MIN_TRADE_CASH ($150)
+    max_trade = new_cfg.get("max_trade_size", cfg.get("max_trade_size", 75))
+    if isinstance(max_trade, (int, float)) and max_trade < 25:
+        violations.append(
+            f"RULE 1/7: max_trade_size={max_trade} < $25 minimum — "
+            "prevents acting on high-conviction trades (constitution: MIN_TRADE_CASH=$150)"
+        )
+
+    # Rule 4: concentration risk — max_trade_size must not exceed $250
+    if isinstance(max_trade, (int, float)) and max_trade > 250:
+        violations.append(
+            f"RULE 4: max_trade_size={max_trade} > $250 — "
+            "increases concentration risk beyond safe threshold"
+        )
+
+    # Rule 3: edge threshold must not drop below 0.08
+    min_edge = new_cfg.get("min_scan_edge", cfg.get("min_scan_edge", 0.15))
+    if isinstance(min_edge, (int, float)) and min_edge < 0.08:
+        violations.append(
+            f"RULE 3: min_scan_edge={min_edge} < 0.08 — "
+            "too permissive, risks correlated-source overconfidence"
+        )
+
+    # Rule 5: coin_flip_band must not widen beyond [0.38, 0.62]
+    band = new_cfg.get("coin_flip_band", cfg.get("coin_flip_band", [0.42, 0.58]))
+    if isinstance(band, list) and len(band) == 2:
+        lo, hi = float(band[0]), float(band[1])
+        if lo < 0.38 or hi > 0.62:
+            violations.append(
+                f"RULE 5: coin_flip_band=[{lo},{hi}] too wide — "
+                "allows toxic coin-flip entries up to {hi-0.5:.0%} from 50%"
+            )
+
+    # Rule 6: min_trade_size must not drop below $25
+    min_trade = new_cfg.get("min_trade_size", cfg.get("min_trade_size", 35))
+    if isinstance(min_trade, (int, float)) and min_trade < 25:
+        violations.append(
+            f"RULE 6: min_trade_size={min_trade} < $25 — "
+            "erodes cash discipline (constitution: BUFFER_CASH=$100)"
+        )
+
+    # Rule 2: reject pure win-rate optimization with no EV mention
+    win_rate_only = (
+        "win rate" in reasoning and
+        "ev" not in reasoning and
+        "expected value" not in reasoning and
+        "edge" not in reasoning and
+        "pnl" not in reasoning
+    )
+    if win_rate_only and param not in ("min_scan_edge", "coin_flip_band"):
+        violations.append(
+            "RULE 2: reasoning optimizes win rate without EV/edge basis — "
+            "constitution forbids win-rate-only optimization"
+        )
+
+    # Sanity: conflict_event_min_days must not drop below 14 days
+    min_days = new_cfg.get("conflict_event_min_days",
+                           cfg.get("conflict_event_min_days", 30))
+    if isinstance(min_days, (int, float)) and min_days < 14:
+        violations.append(
+            f"RULE 4: conflict_event_min_days={min_days} < 14 — "
+            "too short, increases expiry compression risk on conflict markets"
+        )
+
+    is_valid = len(violations) == 0
+    return is_valid, violations
+
+
 def write_config_to_scanner(cfg):
     """
     Write the config thresholds into opportunity_scanner.py.
@@ -808,6 +905,22 @@ def main():
         return
 
     log(f"Proposed tweak: {tweak}")
+
+    # ── Constitution validation BEFORE score simulation ───────────────────────
+    is_valid, violations = validate_tweak_against_constitution(cfg, tweak)
+    if not is_valid:
+        violation_text = "\n".join(f"  • {v}" for v in violations)
+        log(f"❌ CONSTITUTION VIOLATION — tweak blocked before simulation:")
+        for v in violations:
+            log(f"  • {v}")
+        tg(
+            f"<b>🚫 Optimizer: Tweak Blocked by Constitution</b>\n\n"
+            f"<b>Proposed:</b> {tweak.get('parameter')} = "
+            f"{tweak.get('old_value')} → {tweak.get('new_value')}\n\n"
+            f"<b>Violations:</b>\n{violation_text}\n\n"
+            f"<i>Score simulation skipped. Config unchanged.</i>"
+        )
+        return
 
     # Apply tweak and score it
     new_cfg = apply_tweak(cfg, tweak)
