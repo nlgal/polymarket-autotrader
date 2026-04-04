@@ -33,7 +33,74 @@ ANTHROPIC_KEY= os.environ.get("ANTHROPIC_API_KEY","").strip()
 AGENT_DIR    = "/opt/polymarket-agent"
 CONFIG_FILE  = os.path.join(AGENT_DIR, "scanner_config.json")
 CONFIG_LOG   = os.path.join(AGENT_DIR, "optimizer.log")
-HISTORY_FILE = os.path.join(AGENT_DIR, "optimizer_history.json")
+HISTORY_FILE  = os.path.join(AGENT_DIR, "optimizer_history.json")
+REVIEW_FILE   = os.path.join(AGENT_DIR, "intelligence", "post_trade_reviews.jsonl")
+
+
+def load_failure_summary(limit=20):
+    """
+    Load the last N post_trade_review records and return a compact failure-mode
+    summary for injection into the Claude prompt.
+    Returns (summary_text, mode_counts dict) — fails gracefully if file missing.
+    """
+    if not os.path.exists(REVIEW_FILE):
+        return "(post_trade_review.jsonl not found — no trace data yet)", {}
+
+    records = []
+    try:
+        with open(REVIEW_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+    except Exception:
+        return "(could not read review file)", {}
+
+    recent = records[-limit:]
+    if not recent:
+        return "(no review records yet)", {}
+
+    # Aggregate failure modes
+    mode_counts  = {}
+    mode_capital = {}
+    for r in recent:
+        mode = r.get("primary_failure_mode", "none")
+        pnl  = float(r.get("realized_pnl", 0))
+        mode_counts[mode]  = mode_counts.get(mode, 0) + 1
+        mode_capital[mode] = mode_capital.get(mode, 0.0) + min(pnl, 0)
+
+    # Sort by capital destroyed
+    sorted_modes = sorted(
+        [(m, c, mode_capital[m]) for m, c in mode_counts.items() if m != "none"],
+        key=lambda x: x[2]  # most negative first
+    )
+
+    # Build summary lines
+    lines = [f"Post-trade review traces (last {len(recent)} records):"]
+    for mode, count, cap_lost in sorted_modes[:6]:
+        lines.append(
+            f"  • {mode}: {count}x occurrences, ${cap_lost:.0f} capital lost"
+        )
+
+    # Winning modes (positive PnL records)
+    wins = [r for r in recent if float(r.get("realized_pnl", 0)) > 0]
+    if wins:
+        avg_win = sum(float(r["realized_pnl"]) for r in wins) / len(wins)
+        lines.append(f"  • Win records: {len(wins)}/{len(recent)}, avg +${avg_win:.1f}")
+
+    # Module attribution
+    module_pnl = {}
+    for r in recent:
+        mod = r.get("source_module", "unknown")
+        module_pnl[mod] = module_pnl.get(mod, 0.0) + float(r.get("realized_pnl", 0))
+    for mod, pnl in sorted(module_pnl.items(), key=lambda x: x[1]):
+        lines.append(f"  • [{mod}] total PnL: ${pnl:+.0f}")
+
+    return "
+".join(lines), mode_counts
 
 # ── Default config (written if missing) ──────────────────────────────────────
 DEFAULT_CONFIG = {
@@ -247,6 +314,19 @@ def propose_tweak(cfg, trade_history, current_score, history):
         for h in history[-5:]
     ) if history else "  (no history yet)"
 
+    # Load failure mode traces from post_trade_review.jsonl
+    failure_summary, failure_modes = load_failure_summary(limit=20)
+
+    # Flag repeated failure modes for Claude to target specifically
+    repeated_flags = []
+    for mode, count in sorted(failure_modes.items(), key=lambda x: -x[1]):
+        if count >= 3 and mode != "none":
+            repeated_flags.append(f"  ⚠ REPEATED ({count}x): {mode}")
+    repeated_section = (
+        "REPEATED FAILURE MODES (requires guardrail, not just parameter tweak):\n"
+        + "\n".join(repeated_flags)
+    ) if repeated_flags else "  (no repeated failure modes detected yet)"
+
     prompt = f"""You are optimizing a Polymarket trading bot scanner configuration.
     
 CURRENT CONFIG:
@@ -263,7 +343,15 @@ WINNING TRADES (last 200 activity records):
 LOSING TRADES:
 {loss_summary}
 
+FAILURE MODE ANALYSIS (from post_trade_review traces):
+{failure_summary}
+
+{repeated_section}
+
 TASK: Propose ONE specific parameter change to improve the score.
+If a failure mode appears 3+ times, explain which parameter change would reduce it.
+If the repeated failure modes suggest a structural issue (not a threshold problem),
+say so in the reasoning — the system can add a guardrail instead.
 Rules:
 - Only suggest changing ONE parameter at a time
 - The change must be data-driven (explain why based on winning/losing patterns)
@@ -645,13 +733,17 @@ def main():
             save_history(history)
             log(f"Config v{new_cfg['version']} saved and applied to scanner")
 
-            tg(f"""<b>🔬 Optimizer: IMPROVEMENT</b>
+            # Include top failure mode in Telegram if present
+        _failure_sum, _fmodes = load_failure_summary(limit=20)
+        _top_mode = sorted(_fmodes.items(), key=lambda x: -x[1])[0][0] if _fmodes else "none"
+        tg(f"""<b>🔬 Optimizer: IMPROVEMENT</b>
 Score: {current_score:.1f} → {new_score:.1f} (+{new_score - current_score:.1f})
 
 <b>Tweak:</b> {tweak.get('parameter')} = {tweak.get('old_value')} → {tweak.get('new_value')}
 <b>Reason:</b> {tweak.get('reasoning', '')[:120]}
 
-<b>Stats:</b> {new_details.get('n_trades')} trades | {new_details.get('win_rate')}% win rate | avg {new_details.get('avg_pnl_pct'):+.0f}% per trade""")
+<b>Stats:</b> {new_details.get('n_trades')} trades | {new_details.get('win_rate')}% win rate | avg {new_details.get('avg_pnl_pct'):+.0f}% per trade
+<b>Top failure mode:</b> <code>{_top_mode}</code>""")
         else:
             log(f"❌ Could not write to scanner: {msg}")
     else:
