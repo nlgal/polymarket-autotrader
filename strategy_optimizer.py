@@ -379,26 +379,31 @@ Respond with ONLY a JSON object:
             return None, f"API error {resp.status_code}"
 
         content = resp.json().get("content", [{}])[0].get("text", "")
-        # Try to extract JSON - Claude sometimes adds markdown or trailing text
-        # Try ```json block first
-        code_match = re.search(r'```(?:json)?\s*({.*?})\s*```', content, re.DOTALL)
+        # Robust JSON extractor — handles multiline strings, markdown blocks, etc.
+        # 1. Try ```json ... ``` code block
+        code_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', content)
         if code_match:
             try:
-                return json.loads(code_match.group(1)), ""
-            except: pass
-        # Try raw JSON object
-        for match in re.finditer(r'\{[^{}]+\}', content, re.DOTALL):
-            try:
-                result = json.loads(match.group())
+                result = json.loads(code_match.group(1))
                 if "parameter" in result:
                     return result, ""
-            except: continue
-        # Try finding any JSON-like structure
-        bracket_match = re.search(r'(\{[\s\S]*?\})', content)
-        if bracket_match:
-            try:
-                return json.loads(bracket_match.group(1)), ""
             except: pass
+        # 2. Try to find outermost { } pair (handles multiline reasoning field)
+        start = content.find("{")
+        if start != -1:
+            depth = 0
+            for i, ch in enumerate(content[start:], start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            result = json.loads(content[start:i+1])
+                            if "parameter" in result:
+                                return result, ""
+                        except: pass
+                        break
         return None, f"no valid json in: {content[:150]}"
     except Exception as e:
         return None, str(e)[:80]
