@@ -106,6 +106,19 @@ PRIORITY_WATCHLIST = [
         "label": "Trump ends Iran ops",
         "label_match": "trump announces end of military operations against iran",
     },
+    # US invade Mexico in 2026 — YES=8¢ on 0% fee, ~98% true NO probability
+    # Resolution: US must establish territorial control. Cross-border ops don't qualify.
+    {
+        "condition_id": "",
+        "label": "US invade Mexico NO",
+        "label_match": "us invade mexico in 2026",
+    },
+    # Putin out as President of Russia by Dec 31 — SecondWindCapital bought $3.8k NO
+    {
+        "condition_id": "",
+        "label": "Putin out Dec31 NO",
+        "label_match": "putin out as president of russia by december 31",
+    },
     # US forces enter Iran by April 30 (YES directional — we hold this)
     {
         "condition_id": "",
