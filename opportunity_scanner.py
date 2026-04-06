@@ -94,11 +94,20 @@ PRIORITY_WATCHLIST = [
         "label": "Ceasefire May31",
         "label_match": "ceasefire by may 31",
     },
-    # US x Iran ceasefire by June 30
+    # US x Iran ceasefire by June 30 — zerosmart bought $3,280 NO today (Apr 6)
+    # Iran rejected ceasefire plan. Trump set April 7 8pm EDT deadline.
+    # YES at 57¢ implies 57% probability — thesis: ~42%, edge ~+15%, 0% fee
     {
         "condition_id": "",
-        "label": "Ceasefire Jun30",
+        "label": "Ceasefire Jun30 NO",
         "label_match": "ceasefire by june 30",
+    },
+    # US x Iran ceasefire by May 31 — YES at 48¢, Iran rejected plan today
+    # We hold 121sh NO @ 0.62 (currently -15%). Thesis intact: ~+22% edge.
+    {
+        "condition_id": "",
+        "label": "Ceasefire May31 NO",
+        "label_match": "ceasefire by may 31",
     },
     # Trump announces end of military operations against Iran
     {
