@@ -912,7 +912,9 @@ def ensure_allowances(state):
         # USDC contract on Polygon
         USDC = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
         # Polymarket CTF Exchange
-        CTF_EXCHANGE = Web3.to_checksum_address("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E")
+        CTF_EXCHANGE = Web3.to_checksum_address(
+    os.environ.get("CTF_EXCHANGE_ADDRESS", "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E")
+)  # Override in .env for V2 migration
         # Polymarket Neg Risk CTF Exchange  
         NEG_RISK_EXCHANGE = Web3.to_checksum_address("0xC5d563A36AE78145C45a50134d48A1215220f80a")
         # Neg Risk Adapter

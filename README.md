@@ -124,3 +124,27 @@ Proposes ONE parameter change. Validates against constitution before simulation.
 | v2.1.1 | Mar 29 2026 | Safe GS026 fix — eth_keys.sign_msg_hash |
 | v2.1.0 | Mar 28 2026 | Token optimizations, GitHub cleanup |
 | v2.0.0 | Mar 27 2026 | LP quoter, merge_apr30, whale scanner |
+
+## Upcoming: CTF + CLOB v2 Migration (2-3 weeks)
+
+Polymarket announced a full exchange stack upgrade. [Announcement](https://x.com/PolymarketDevs/status/2041178623948808693)
+
+**Impact on this agent:**
+
+| Component | Change needed | When |
+|-----------|---------------|------|
+| `py_clob_client` | `pip install --upgrade py-clob-client` when v2 SDK drops | Before migration day |
+| `CTF_EXCHANGE_ADDRESS` in `.env` | Update to new V2 contract address | Migration day |
+| `COLLATERAL_TOKEN` | New "Polymarket USD" token — wrap USDC.e → pmUSD | Migration day |
+| Open LP orders | All cleared during maintenance window — auto-re-quoted next cron | Automatic |
+
+**Steps on migration day:**
+1. Polymarket publishes new contract addresses
+2. Update `.env`: `CTF_EXCHANGE_ADDRESS=<new_v2_address>`
+3. `pip install --upgrade py-clob-client` on server
+4. `systemctl restart polymarket`
+5. LP quoter re-quotes automatically on next 4h cycle
+
+**What changed in code (v2 prep):**
+- `CTF_EXCHANGE` in `autotrader.py` now reads from `CTF_EXCHANGE_ADDRESS` env var (defaults to current V1 address)
+- On migration day: set env var, restart — no code deployment needed
