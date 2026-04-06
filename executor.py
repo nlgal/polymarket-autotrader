@@ -114,6 +114,12 @@ COMMANDS = {
         f"{VENV_PYTHON} -m py_compile {AGENT_DIR}/strategy_optimizer.py && "
         f"echo OK"
     ),
+    "deploy_lp": (
+        f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/lp_quoter.py "
+        f"-o {AGENT_DIR}/lp_quoter.py && "
+        f"{VENV_PYTHON} -m py_compile {AGENT_DIR}/lp_quoter.py && "
+        f"echo OK"
+    ),
     "service_status":  "systemctl status polymarket --no-pager -l",
     "service_restart": "systemctl restart polymarket && echo OK",
     "service_stop":    "systemctl stop polymarket && echo OK",
