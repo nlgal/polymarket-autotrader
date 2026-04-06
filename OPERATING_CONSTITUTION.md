@@ -375,14 +375,166 @@ All master analysis cycles return JSON with this structure:
 | FUNDER wallet | 0xc2c1892653C175113c65961C7F4227c18D09b52a |
 | SIGNER wallet | 0x7C67b2e2082Fa089E1B703aA248eE17B9E56bBF6 |
 | GitHub | nlgal/polymarket-autotrader |
-| Agent version | v2.1.3 |
+| Agent version | v2.3.0 |
 | Fee-free categories | Geopolitical/World Events (0% permanent) |
-| MIN_TRADE_CASH | $150 |
-| BUFFER_CASH | $100 |
-| MAX_PORTFOLIO_EXPOSURE | $2,500 |
+| MIN_TRADE_CASH | $200 |
+| BUFFER_CASH | $200 |
+| MAX_PORTFOLIO_EXPOSURE | $4,000 |
 | LP conflict threshold | 100 shares |
 | LP order type | GTD 70-minute |
 | LP spread | 1.5 ticks behind best bid/ask |
+
+---
+
+## Daily Execution Checklist
+
+Run through this every session before making any capital decision.
+The checklist enforces the 10-step decision hierarchy in a compact operational form.
+
+---
+
+### 1. CAPITAL STATE (run first, always)
+
+```
+CLOB free cash:    $_____ (from lp_quoter stdout "USDC balance: $X")
+Positions value:   $_____ (from data-api.polymarket.com/value)
+Total equity:      $_____ (CLOB cash + positions)
+Last trade age:    ___h
+```
+
+**Gate:** If CLOB cash < $200 → no new directional entries. LP fills only.  
+**Gate:** If CLOB cash > $1,000 AND last trade > 6h → investigate why autotrader is idle.
+
+---
+
+### 2. PORTFOLIO HEALTH (check before evaluating any market)
+
+- [ ] Any losing YES/NO contradictions? (same market, net loss at resolution)
+- [ ] Any position > 30% of total equity cost basis? → overconcentration alert
+- [ ] Iran cluster (cease + forces + invasion) > 60% of portfolio? → flag
+- [ ] Any positions within 5 days of expiry at price 20–80¢? → expiry compression risk
+- [ ] Any LP fill limit hitting repeatedly? → review `MAX_FILL_USDC_PER_SIDE`
+- [ ] Discord token expired? → Telegram alert, fix token immediately
+
+---
+
+### 3. SIGNAL TRIAGE (whale + Discord, 2-minute scan)
+
+For each whale signal received since last check:
+
+| Check | Question |
+|-------|----------|
+| Timeliness | Did price move materially since the signal? If yes, assume late. |
+| Uniqueness | Is this the same wallet's Nth trade in the same market? Pattern = conviction. |
+| Catalyst | Any news in last 24h that explains it? If no news → signal is the news. |
+| Book state | Is the order book liquid enough to enter at a real price? |
+| Correlation | Does this increase Iran cluster concentration? |
+
+**Gate:** Signal + hollow book = no trade. Wait for liquidity to return.  
+**Gate:** Signal + no catalyst + uncorrelated market = allow to scorer at half-Kelly.
+
+---
+
+### 4. SCANNER OUTPUT REVIEW
+
+The opportunity scanner runs every 4h. After each run:
+
+- [ ] Any BUY_YES or BUY_NO signals fired?
+- [ ] Did the pre-trade checklist block anything? (check `[PREFLIGHT]` in logs)
+- [ ] Did any priority watchlist market get scored? (ceasefire dates, Mexico NO, Putin NO)
+- [ ] Did the fee-market price guard fire? (fee market + YES < 0.20 → hard block)
+- [ ] If no trades placed in 24h with cash > $400: scanner may be over-filtered → review MIN_SCAN_EDGE
+
+---
+
+### 5. LP QUOTER STATUS
+
+Every 4h the LP quoter re-quotes. Check:
+
+| Market | Side | Fill limit | Max inventory | Current fills | Status |
+|--------|------|-----------|--------------|--------------|--------|
+| Cease Apr15 | NO | $5,000/session | 1,400sh | $___ | active/disabled |
+| Cease Apr30 | Two-sided | $5,000/session | 1,000sh | $___ | active/partial |
+| Cease Apr7 | YES-only | $5,000/session | 1,000sh | $___ | active/partial |
+
+**Gate:** If a market hits fill limit and disables → decide whether to raise limit or accept  
+**Gate:** If LP is one-sided due to conflict check → this is correct behavior, not a bug
+
+---
+
+### 6. NEWS CHECK (2-minute scan before any new position)
+
+For any market being considered:
+
+1. Check Google News RSS for last 4h: `news.google.com/rss/search?q={keyword}`
+2. Apply strict resolution filter — only act on: "signed", "agreed", "won", "invaded", "launched"
+3. Reject: "proposed", "offered", "negotiations", "talks", "unlikely", "denies"
+4. Check if price already moved → if yes, signal may be late (meta-rule #6)
+
+---
+
+### 7. PRE-TRADE GATES (must pass all before any order)
+
+The `_pre_trade_checklist()` enforces these automatically, but verify manually for large trades:
+
+- [ ] Fee market + YES < 0.20 or YES > 0.83? → BLOCK (lottery ticket / already decided)
+- [ ] Fee market + not sports + not approved category + no catalyst? → BLOCK
+- [ ] Sports market + YES < 0.25? → BLOCK (lottery ticket)
+- [ ] "win on YYYY-MM-DD" pattern? → BLOCK always (match-day game)
+- [ ] Trade price < 0.05? → BLOCK (near-zero payout)
+- [ ] Does this create a contradiction? (YES + NO same market) → BLOCK
+- [ ] Does this push Iran cluster above 60% of equity? → reduce size or skip
+
+---
+
+### 8. POST-SESSION LOG
+
+After any session with trades or significant decisions:
+
+- [ ] Write `post_trade_review.write_review()` for each closed position
+- [ ] Run `python post_trade_review.py --detect` to check for repeated failure modes
+- [ ] Update Google Doc (LP Performance Record) if equity moved > 10%
+- [ ] Push any code changes to GitHub with semantic version tag
+
+---
+
+### 9. WEEKLY TASKS (Mondays)
+
+- [ ] Whale watchlist refresh ran? (cron `3691d746` — checks automatically)
+- [ ] Strategy optimizer proposed a change? Accepted or rejected with reason?
+- [ ] Backtesting repo check ran? (cron `304219a5`)
+- [ ] PMXT repo check ran? (cron `25596d66`)
+- [ ] LP stipend check ran? Equity above $10k threshold? (cron `d524dbea`)
+- [ ] Polymarket V2 migration: any announcement from @PolymarketDevs?
+
+---
+
+### 10. EMERGENCY PROCEDURES
+
+**Autotrader crash-looping:**
+1. `deploy_autotrader` via executor → pulls fresh from GitHub
+2. Check `tail_log` for error
+3. If stale peak equity → auto-repair runs on next cycle
+
+**Contradiction detected:**
+1. Identify which side was created by LP vs directional intent
+2. Sell the LP-created side (smaller, accidental)
+3. Fix `max_inventory` or conflict check that allowed it
+
+**LP over-accumulating:**
+1. Raise `max_inventory` in `LP_MARKETS` config
+2. Or accept accumulation if thesis is strong (LLN applies)
+3. Check if `MAX_FILL_USDC_PER_SIDE` needs adjustment
+
+**Discord token expired:**
+1. Regenerate at discord.com/developers/applications → Bot → Reset Token
+2. Update `/opt/polymarket-agent/.env` → `DISCORD_TOKEN=<new_token>`
+3. `systemctl restart polymarket`
+
+**Polymarket V2 migration (when announced):**
+1. Open Google Doc: https://docs.google.com/document/d/1VqH8tAbrqWExXivPLHOjwwJnrJ3rJPkZQfGmYRUuhlA
+2. Follow 8-step checklist in doc
+3. Key steps: update `CTF_EXCHANGE_ADDRESS` in `.env`, `pip upgrade py-clob-client`, wrap USDC.e → pmUSD
 
 ---
 
