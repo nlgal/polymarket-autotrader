@@ -268,6 +268,22 @@ Do not judge quality by outcome alone. A winning trade can be bad process. A los
 
 ---
 
+## The Simons Principle
+
+> *"If you're gonna trade using models, you just slavishly use the models. You do whatever the hell it says."*
+> — Jim Simons, Renaissance Technologies [31:03]
+
+This is why the `_pre_trade_checklist()` in `place_trade()` is a hard block, not a warning.
+This is why `validate_tweak_against_constitution()` rejects proposals before simulation runs.
+This is why the fast-reject gate fires before Haiku is called.
+
+Discretionary override makes backtesting impossible. If you selectively follow the model,
+you cannot learn from it. The Man City loss ($150, April 4 2026) is the proof:
+Haiku said BUY at YES=0.12 on a fee market. The model was wrong. The guard should have
+blocked it before the model was ever asked. Slavishly use the guards.
+
+---
+
 ## Conflict Resolution Hierarchy
 
 When in conflict, trust this order:
