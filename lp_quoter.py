@@ -398,17 +398,34 @@ def run_market(client, mkt, state, open_orders, usdc_avail):
     #   - Normal markets (mid 20-80¢): 1 tick back = 0.01
     #   - Near-certain markets (mid >80¢ or <20¢): pull back more (0.02)
     #     because the spread is extremely tight and midpoint ≈ best ask
-    def safe_price(mid):
+    def safe_price(mid, extra_pullback=0.0):
         # EVPoly-inspired: place 1.5 ticks behind mid for fill protection.
         # Reward score at 1.5¢ back = ((max_spread - 1.5) / max_spread)² = 0.44×
         # Much safer than midpoint while still earning meaningful rewards.
         # Near-certain markets (>80¢ or <20¢) need extra pullback because
         # the spread is so tight that even 1.5¢ back may cross the book.
         pullback = 0.03 if (mid > 0.80 or mid < 0.20) else 0.015
-        return max(0.01, min(0.99, mid - pullback))
+        return max(0.01, min(0.99, mid - pullback - extra_pullback))
 
     yes_price = safe_price(yes_mid)
     no_price  = safe_price(no_mid)
+
+    # ── Parity check — detect arb bots before quoting ─────────────────────
+    # Binary markets: YES_mid + NO_mid should ~= 1.00.
+    # If sum > 1.02: spread is inverted — arb bots are actively buying both
+    # sides for a risk-free profit. Our quotes would be filled by arb bots,
+    # not real traders. Skip this cycle. (karlbooklover / PredictParity, Apr 2026)
+    # If sum < 0.96: hollow book — widen our pullback to avoid thin fills.
+    _parity_sum = yes_mid + no_mid
+    if _parity_sum > 1.02:
+        log(f"  [PARITY SKIP] {label} YES+NO={_parity_sum:.4f}>1.02 — arb bot active, skipping")
+        state.setdefault(label, {})["last_parity_skip_ts"] = int(time.time())
+        save_state(state)
+        return None, None  # skip this market — no orders placed this cycle
+    if _parity_sum < 0.96:
+        log(f"  [PARITY WARN] {label} YES+NO={_parity_sum:.4f}<0.96 — hollow book, widening pullback")
+        yes_price = safe_price(yes_mid, extra_pullback=0.02)
+        no_price  = safe_price(no_mid,  extra_pullback=0.02)
 
     # ── Position conflict check (EVPoly-inspired) ─────────────────────────
     # If we hold a directional position >100 shares on this contract,
