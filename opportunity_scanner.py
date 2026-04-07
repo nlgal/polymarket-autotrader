@@ -1230,7 +1230,103 @@ def main():
         if cash_remaining < MIN_TRADE_SIZE:
             break
     
-    # Build Telegram summary
+    # ════════════════════════════════════════════════════════════════
+    # PASS 2 — Near-Resolution Scanner (Type-4 bot, anon-fake style)
+    # Finds any active market with an outcome >= 95.5¢ and buys residual.
+    # Zero directional risk — pure resolution timing edge.
+    # ════════════════════════════════════════════════════════════════
+    try:
+        import near_resolution_scanner as _nr
+        nr_candidates = _nr.scan_near_resolution_markets()
+        log(f"[NearRes] {len(nr_candidates)} candidate(s) found")
+        _nr.load_state()
+        _nr_spent = 0
+        for _nrc in nr_candidates[:5]:  # max 5 per scanner run
+            if cash_remaining - _nr_spent < _nr.MIN_POSITION_USDC:
+                break
+            if (_nrc["conditionId"], _nrc["outcome"]) in [(p["conditionId"], p["outcome"])
+                    for p in [{"conditionId": s, "outcome": "?"} for s in existing_conditions]]:
+                continue
+            _confirmed, _live_p, _reason = _nr.confirm_near_resolution(_nrc)
+            if not _confirmed:
+                log(f"  [NearRes] SKIP: {_reason}")
+                continue
+            _nrc["price"] = _live_p
+            _filled, _spent_nr = _nr.place_near_res_trade(
+                _nrc, cash_remaining - _nr_spent, client
+            )
+            if _filled:
+                _nr_spent += _spent_nr
+                _nr._state[f"{_nrc['conditionId']}:{_nrc['outcome']}"] = {
+                    "ts": time.time(), "question": _nrc["question"][:60],
+                    "price": _live_p, "spent": _spent_nr,
+                }
+                _nr.save_state()
+                trades_placed.append({
+                    "q": _nrc["question"][:60],
+                    "action": f"BUY_{_nrc['outcome']} [NEAR-RES]",
+                    "size": _spent_nr,
+                    "edge": _nrc["residual"],
+                    "reasoning": f"Near-res: {_nrc['outcome']} @ {_live_p:.4f} ({_nrc['residual']*100:.1f}¢ residual)",
+                    "detail": "near_resolution",
+                    "uw_signal": False,
+                    "uw_tags": [],
+                })
+        if _nr_spent > 0:
+            cash_remaining -= _nr_spent
+            log(f"  [NearRes] Deployed ${_nr_spent:.2f} across near-resolution trades")
+    except Exception as _nr_err:
+        log(f"[NearRes] Error: {_nr_err}")
+
+    # ════════════════════════════════════════════════════════════════
+    # PASS 3 — Book Imbalance Scanner (Type-2 bot, vague-sourdough style)
+    # Detects when bid_depth / ask_depth > 4x or < 0.25x and enters
+    # the thin side before repricing. Claude-confirmed only.
+    # ════════════════════════════════════════════════════════════════
+    try:
+        import book_imbalance_scanner as _bi
+        bi_candidates = _bi.scan_only()
+        log(f"[BookImb] {len(bi_candidates)} imbalanced market(s) found")
+        _bi.load_state()
+        _bi_spent = 0
+        for _bic in bi_candidates[:3]:  # max 3 per scanner run
+            if cash_remaining - _bi_spent < _bi.MIN_TRADE_SIZE:
+                break
+            _confirmed, _reason = _bi.claude_confirm_imbalance(
+                _bic["question"], _bic["thin_side"],
+                _bic["ratio"], _bic["bid_depth"], _bic["ask_depth"]
+            )
+            log(f"  [BookImb] {'✅' if _confirmed else '❌'} {_bic['question'][:45]} — {_reason}")
+            if not _confirmed:
+                continue
+            _filled, _spent_bi = _bi.place_imbalance_trade(
+                _bic, cash_remaining - _bi_spent, client
+            )
+            if _filled:
+                _bi_spent += _spent_bi
+                _cooldown_key = f"{_bic['conditionId']}:{_bic['action']}"
+                _bi._state[_cooldown_key] = {
+                    "ts": time.time(), "question": _bic["question"][:60],
+                    "ratio": _bic["ratio"], "spent": _spent_bi,
+                }
+                _bi.save_state()
+                trades_placed.append({
+                    "q": _bic["question"][:60],
+                    "action": f"{_bic['action']} [BOOK-IMB]",
+                    "size": _spent_bi,
+                    "edge": min(abs(_bic["ratio"] - 1) * 0.1, 0.30),
+                    "reasoning": f"Book imbalance {_bic['ratio']:.1f}x — {_reason}",
+                    "detail": "book_imbalance",
+                    "uw_signal": False,
+                    "uw_tags": [],
+                })
+        if _bi_spent > 0:
+            cash_remaining -= _bi_spent
+            log(f"  [BookImb] Deployed ${_bi_spent:.2f} across imbalance trades")
+    except Exception as _bi_err:
+        log(f"[BookImb] Error: {_bi_err}")
+
+        # Build Telegram summary
     now = datetime.datetime.utcnow().strftime("%H:%M UTC")
     
     if trades_placed:
