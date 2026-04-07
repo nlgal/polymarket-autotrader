@@ -19,6 +19,91 @@ sys.path.insert(0, '/opt/polymarket-agent')
 from dotenv import load_dotenv
 load_dotenv('/opt/polymarket-agent/.env')
 
+# ── Hormuz / Iran Conflict Proxy Signal ───────────────────────────────────────
+# No dedicated Hormuz market exists on Polymarket. We use the ceasefire term
+# structure as a real-time proxy:
+#   ceasefire_prob   = P(deal reached) → Hormuz reopens → oil price falls
+#   conflict_ongoing = 1 - ceasefire_prob → Hormuz closed → war premium persists
+#
+# The NEAREST active ceasefire market is the best signal:
+# - Apr15 at ~96¢ YES: deal essentially done for near-term
+# - Jun30 at ~85¢ YES: market pricing >85% ceasefire by June
+#
+# Used by: oil price market scoring, news gate veto logic, OPERATING_CONSTITUTION
+
+CEASEFIRE_TOKENS = {
+    "Apr15": "85191934649046129480174964255278880752271767733539167443243111973456166096127",
+    "Apr30": "44149007410374101286260953227333745102128417138356632089802983317837574022801",
+    "Jun30": "57478765869949888455459956095684929476027637398040453022498617640396695289645",
+}
+
+def fetch_hormuz_proxy() -> dict:
+    """
+    Fetch live ceasefire market prices and derive a Hormuz reopening probability signal.
+    Returns a dict with:
+      - hormuz_reopen_prob: float  (best estimate of P(Hormuz reopens) = nearest ceasefire YES)
+      - conflict_ongoing_prob: float  (1 - hormuz_reopen_prob)
+      - war_premium_multiplier: float  (1.0 = no premium, 1.5 = 50% premium expected)
+      - signal_label: str  (human-readable summary for Claude prompt injection)
+      - prices: dict  (raw ceasefire YES prices by expiry)
+    """
+    prices = {}
+    for label, token in CEASEFIRE_TOKENS.items():
+        try:
+            r = requests.get(
+                f"https://clob.polymarket.com/midpoint?token_id={token}",
+                timeout=5
+            )
+            if r.ok:
+                prices[label] = round(float(r.json().get("mid", 0.5)), 3)
+        except:
+            pass
+
+    if not prices:
+        return {
+            "hormuz_reopen_prob": 0.5,
+            "conflict_ongoing_prob": 0.5,
+            "war_premium_multiplier": 1.25,
+            "signal_label": "Hormuz proxy: ceasefire data unavailable — using neutral 50%",
+            "prices": {},
+        }
+
+    # Use nearest available expiry as primary signal
+    nearest_prob = prices.get("Apr15") or prices.get("Apr30") or prices.get("Jun30") or 0.5
+    conflict_prob = round(1.0 - nearest_prob, 3)
+
+    # War premium multiplier: at 0% ceasefire (full war) → 1.5x premium
+    # At 100% ceasefire (peace) → 1.0x (no premium)
+    # Linear: multiplier = 1.0 + 0.5 * conflict_prob
+    war_premium = round(1.0 + 0.5 * conflict_prob, 3)
+
+    # Build label
+    prices_str = " | ".join(f"{k} YES={v:.0%}" for k, v in sorted(prices.items()))
+    if nearest_prob > 0.85:
+        interpretation = "CEASEFIRE LIKELY — Hormuz reopening priced in, oil war premium collapsing"
+    elif nearest_prob > 0.60:
+        interpretation = "CEASEFIRE PROBABLE — partial Hormuz premium still priced"
+    elif nearest_prob > 0.35:
+        interpretation = "UNCERTAIN — Hormuz status unclear, mixed signals"
+    else:
+        interpretation = "CONFLICT ONGOING — Hormuz war premium elevated"
+
+    label = (
+        f"Hormuz Proxy (via Polymarket ceasefire markets): {interpretation}\n"
+        f"  Ceasefire prob: {nearest_prob:.0%} | Conflict prob: {conflict_prob:.0%} | "
+        f"War premium multiplier: {war_premium:.2f}x\n"
+        f"  Raw prices: {prices_str}"
+    )
+
+    return {
+        "hormuz_reopen_prob":   nearest_prob,
+        "conflict_ongoing_prob": conflict_prob,
+        "war_premium_multiplier": war_premium,
+        "signal_label":         label,
+        "prices":               prices,
+    }
+
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 # Load scanner config (tunable params + blacklists)
@@ -761,6 +846,33 @@ def score_with_claude(question, yes_p, description, news_snippets, uw_summary=""
     
     uw_section = f"\nUNUSUAL WHALES SIGNAL:\n{uw_summary}" if uw_summary else ""
     context_section = f"\n\nTRADING CONTEXT (from CLAUDE.md):\n{_CLAUDE_MD_CONTEXT[:1500]}" if _CLAUDE_MD_CONTEXT else ""
+
+    # ── Hormuz proxy injection for oil/conflict markets ───────────────────────
+    _q_lower = question.lower()
+    _is_oil  = any(x in _q_lower for x in ["crude oil","wti","brent","oil price","$120","$110","$100","$90","hit (high)","hit (low)"])
+    _is_conf = any(x in _q_lower for x in ["iran","ceasefire","hormuz","kharg","military op","conflict ends","war ends","nuclear deal"])
+    _hormuz_section = ""
+    if _is_oil or _is_conf:
+        try:
+            _h = fetch_hormuz_proxy()
+            _hormuz_section = f"\nPOLYMARKET HORMUZ/CONFLICT PROXY SIGNAL:\n{_h['signal_label']}"
+            if _is_oil and "high" in _q_lower and _h["hormuz_reopen_prob"] > 0.80:
+                _hormuz_section += (
+                    f"\nHARD CONSTRAINT: Ceasefire probability is {_h['hormuz_reopen_prob']:.0%}. "
+                    f"Hormuz reopening is priced in. Oil supply returning to market. "
+                    f"Oil war premium is COLLAPSING. DO NOT assign YES probability > 15% "
+                    f"on oil price HIGH targets above current spot."
+                )
+            elif _is_oil and "high" in _q_lower and _h["hormuz_reopen_prob"] > 0.50:
+                _hormuz_section += (
+                    f"\nADJUSTMENT: Ceasefire at {_h['hormuz_reopen_prob']:.0%} probability. "
+                    f"Reduce oil HIGH target YES probability by ~{int(_h['hormuz_reopen_prob']*30)}% "
+                    f"from baseline — war premium partially deflating."
+                )
+        except Exception as _he:
+            pass  # non-fatal
+    # ─────────────────────────────────────────────────────────────────────────
+
     prompt = f"""You are a Nash Equilibrium Strategist and prediction market analyst. \
 You model markets as multi-player strategic games and find mispricings by identifying when the \
 current price deviates from the true equilibrium probability.
@@ -770,7 +882,7 @@ CURRENT YES PRICE: {yes_p:.2f} (implies {yes_p*100:.0f}% probability)
 DESCRIPTION: {description}
 
 RECENT NEWS CONTEXT:
-{news_snippets}{uw_section}{context_section}
+{news_snippets}{_hormuz_section}{uw_section}{context_section}
 
 ANALYTICAL FRAMEWORK — apply this thinking before scoring:
 
@@ -944,6 +1056,11 @@ def place_trade(client, token_id, side, size, neg_risk, tick, yes_price):
 
 def main():
     log("=== Opportunity Scanner Starting ===")
+
+    # ── Fetch Hormuz proxy signal (ceasefire market prices) ──────────────────
+    _hormuz = fetch_hormuz_proxy()
+    log(f"[HORMUZ] {_hormuz['signal_label'].splitlines()[0]}")
+
     
     # Get cash
     try:
