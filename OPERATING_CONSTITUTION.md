@@ -510,7 +510,52 @@ After any session with trades or significant decisions:
 
 ---
 
-### 9. WEEKLY TASKS (Mondays)
+### 9. CAPITAL MILESTONE UNLOCKS
+
+As portfolio scales, new strategies unlock. Do NOT activate early — adverse selection risk scales with capital deployed.
+
+#### 🔒 LOCKED — Unlocks at $20,000 CLOB equity: Sports LP Quoting
+
+Polymarket distributes **$5M+/month** in LP rewards across sports markets (April 2026 program). At our current scale (~$4K) we capture <0.01% of any pool. At $20K we become competitive.
+
+**Reward rates (April 2026, pre-game + live combined):**
+
+| Market | Pool/Game | Unlock Condition |
+|--------|-----------|------------------|
+| NBA (regular season + playoffs) | **$7,700/game** | CLOB equity ≥ $20K |
+| Champions League (quarter-finals+) | **$24,000/game** | CLOB equity ≥ $20K |
+| UFC main card | **$4,250/event** | CLOB equity ≥ $20K |
+| Premier League | **$10,000/game** | CLOB equity ≥ $20K |
+| ATP/WTA tennis | **$1,450/match** | CLOB equity ≥ $20K |
+
+**How to activate:**
+1. Confirm CLOB free cash ≥ $20,000 (run `lp_quoter.py --check-balance`)
+2. Add sports markets to `LP_MARKETS` in `lp_quoter.py` with:
+   - `target_shares`: 1,000–2,000/side
+   - `max_spread`: per-market blue zone (check order book UI)
+   - `max_inventory`: 500sh (sports resolve quickly, don't accumulate)
+   - `enabled`: False until game is < 4h away (activity guard handles live games)
+3. Set `SPORTS_LP_MODE = True` in `.env`
+4. Run as separate cron from geopolitical LP (different risk profile)
+
+**Risk controls for sports LP:**
+- Cancel ALL sports LP orders 5 min before kickoff/tipoff (live markets reprice instantly)
+- Block LP on any market where the autotrader holds a directional position (conflict check)
+- Max sports LP exposure: 20% of CLOB cash (leave 80% for geopolitical edge trades)
+- Fee markets: maker rebate = 25% of taker fees collected — orders must FILL to earn
+- Adverse selection is severe in sports: professional MMs dominate; only quote pre-game
+
+**Expected yield at $20K:**
+- NBA: ~1–3% of pool/game → $77–231/game × ~3 games/week = $230–690/week
+- UCL QF: ~1% of pool/game → $240/game × 4 games = $960 over QF round
+- Total estimated: $300–700/week passive while markets are active
+
+**Why $20K threshold:**
+Reward formula is quadratic and relative. Zone depth on NBA markets is $500K–$2M. At $4K deployed we own <1% of zone; quadratic scoring means we earn <0.01% of pool. At $20K we own ~4% → quadratic boosting → ~6–8% of pool → meaningful yield.
+
+---
+
+### 10. WEEKLY TASKS (Mondays)
 
 - [ ] Whale watchlist refresh ran? (cron `3691d746` — checks automatically)
 - [ ] Strategy optimizer proposed a change? Accepted or rejected with reason?
@@ -521,7 +566,7 @@ After any session with trades or significant decisions:
 
 ---
 
-### 10. EMERGENCY PROCEDURES
+### 11. EMERGENCY PROCEDURES
 
 **Autotrader crash-looping:**
 1. `deploy_autotrader` via executor → pulls fresh from GitHub
