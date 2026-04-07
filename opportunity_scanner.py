@@ -1280,10 +1280,14 @@ def main():
 
     # ════════════════════════════════════════════════════════════════
     # PASS 3 — Book Imbalance Scanner (Type-2 bot, vague-sourdough style)
-    # Detects when bid_depth / ask_depth > 4x or < 0.25x and enters
-    # the thin side before repricing. Claude-confirmed only.
+    # DISABLED: Backtest (Apr 7 2026, 71K price points, 23 markets) shows
+    # momentum REVERSAL at all thresholds (2x–10x). Win rate 22-35%, avg
+    # return -0.25% to -2.87%. Polymarket prices efficiently reflect book
+    # imbalances — no exploitable momentum edge on geopolitical/slow markets.
+    # Re-enable only with L2 book snapshot history or 5-min crypto market data.
     # ════════════════════════════════════════════════════════════════
-    try:
+    if False:  # DISABLED — see backtest results above
+     try:
         import book_imbalance_scanner as _bi
         bi_candidates = _bi.scan_only()
         log(f"[BookImb] {len(bi_candidates)} imbalanced market(s) found")
@@ -1323,7 +1327,7 @@ def main():
         if _bi_spent > 0:
             cash_remaining -= _bi_spent
             log(f"  [BookImb] Deployed ${_bi_spent:.2f} across imbalance trades")
-    except Exception as _bi_err:
+     except Exception as _bi_err:
         log(f"[BookImb] Error: {_bi_err}")
 
         # Build Telegram summary

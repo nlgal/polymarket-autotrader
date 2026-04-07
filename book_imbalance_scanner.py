@@ -366,6 +366,13 @@ def place_imbalance_trade(candidate, usdc_available, client):
 
     size_usdc = min(MAX_TRADE_SIZE, max(MIN_TRADE_SIZE, usdc_available * 0.08))
 
+    if PAPER_TRADE_ONLY:
+        log(f"  [PAPER] Would place: {action} '{question[:50]}' @ {price:.4f} (ratio={ratio:.1f}x) — paper trade only")
+        tg(f"📋 <b>[PAPER TRADE]</b> Book Imbalance signal (not executed):\n"
+           f"{action} '{question[:55]}'\n"
+           f"Price: {price:.4f} | Ratio: {ratio:.1f}x | Would deploy: ${min(MAX_TRADE_SIZE, 100):.0f}")
+        return True, min(MAX_TRADE_SIZE, 100)  # simulate fill for tracking
+
     log(f"  PLACING: {action} '{question[:50]}' @ {price:.4f} (ratio={ratio:.1f}x)")
     log(f"  Size: ${size_usdc:.2f} | bid_depth=${candidate['bid_depth']:.0f} ask_depth=${candidate['ask_depth']:.0f}")
 
