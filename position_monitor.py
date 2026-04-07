@@ -424,26 +424,24 @@ def emergency_sell_no_positions():
                 all_ok = False
                 continue
             log(f"  {label}: selling {shares}sh @ best bid {best_bid:.4f} (~${shares*best_bid:.2f})")
-            from py_clob_client.clob_types import OrderArgs, TradeParams
-            from py_clob_client.constants import BUY, SELL
-            # For SELL: create limit order at 1¢ (will fill as market against any bid)
-            # Get best bid first
-            best_bid_r = _req.get(f"https://clob.polymarket.com/book?token_id={token_id}", timeout=8)
-            bids_list = best_bid_r.json().get("bids", []) if best_bid_r.ok else []
-            if not bids_list:
-                log(f"  {label}: no bids in book")
+            from py_clob_client.order_builder.constants import SELL as _SELL_SIDE
+            from py_clob_client.clob_types import OrderArgs as _OA, OrderType as _OT, PartialCreateOrderOptions as _PCO
+            # Use midpoint as limit price — GTC order, will fill against any bid at or above mid
+            mid_r = _req.get(f"https://clob.polymarket.com/midpoint?token_id={token_id}", timeout=8)
+            mid_price = float(mid_r.json().get("mid", 0)) if mid_r.ok else 0
+            if mid_price < 0.03:
+                log(f"  {label}: mid too low ({mid_price:.4f}) — skipping")
                 all_ok = False
                 continue
-            sell_price = float(bids_list[0]["price"])
-            # Build order: sell `shares` tokens at sell_price
-            order_args = OrderArgs(
-                price=sell_price,
-                size=float(shares),
-                side=SELL,
-                token_id=token_id,
-            )
-            order = client.create_order(order_args)
-            resp  = client.post_order(order, OrderType.GTC)
+            # Place limit SELL at mid - 2 ticks (0.02) to ensure fill
+            tick_r = _req.get(f"https://clob.polymarket.com/tick-size?token_id={token_id}", timeout=8)
+            tick = float(tick_r.json().get("minimum_tick_size", 0.01)) if tick_r.ok else 0.01
+            sell_price = max(0.01, round(mid_price - 2*tick, 4))
+            log(f"  {label}: placing SELL limit {shares}sh @ {sell_price:.4f} (mid={mid_price:.4f})")
+            order_args = _OA(token_id=token_id, price=sell_price, size=float(shares), side=_SELL_SIDE)
+            options    = _PCO(tick_size=tick, neg_risk=False)
+            signed     = client.create_order(order_args, options)
+            resp       = client.post_order(signed, _OT.GTC)
             if resp and resp.get("success"):
                 log(f"  {label}: ✅ SOLD")
             else:
