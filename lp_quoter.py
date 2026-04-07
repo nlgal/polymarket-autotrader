@@ -528,6 +528,32 @@ def maybe_send_daily_summary(state):
 
 def main():
     log("=" * 55)
+
+    # ── EMERGENCY SELL: WTI $120 YES (self-disabling) ────────────────────────
+    import os as _eos, requests as _rq2
+    _WTI_FLAG = "/opt/polymarket-agent/.wti_sell_done"
+    if not _eos.path.exists(_WTI_FLAG):
+        try:
+            _TOKEN = "72387266160731568407931217212970384645889453148307103504977225646121486508046"
+            _mid   = float(_rq2.get(f"https://clob.polymarket.com/midpoint?token_id={_TOKEN}", timeout=8).json().get("mid", 0))
+            _tick  = float(_rq2.get(f"https://clob.polymarket.com/tick-size?token_id={_TOKEN}", timeout=8).json().get("minimum_tick_size", 0.01))
+            _sp    = max(0.01, round(_mid - 2 * _tick, 4))
+            log(f"[WTI SELL] 392sh @ {_sp:.4f} (mid={_mid:.4f})")
+            from py_clob_client.order_builder.constants import SELL as _S
+            from py_clob_client.clob_types import OrderArgs as _OA2, OrderType as _OT2, PartialCreateOrderOptions as _PCO2
+            _cli2 = get_client()
+            _res  = _cli2.post_order(
+                        _cli2.create_order(_OA2(token_id=_TOKEN, price=_sp, size=float(392), side=_S),
+                                           _PCO2(tick_size=_tick, neg_risk=False)), _OT2.GTC)
+            log(f"[WTI SELL] result: {_res}")
+            if _res and _res.get("success"):
+                open(_WTI_FLAG, "w").write("done")
+                log("[WTI SELL] ✅ COMPLETE")
+            else:
+                log(f"[WTI SELL] ❌ {_res}")
+        except Exception as _we:
+            log(f"[WTI SELL] error: {_we}")
+    # ────────────────────────────────────────────────────────────────────────
     log("LP QUOTER v1.0 — " + datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
     log("=" * 55)
 
