@@ -387,10 +387,63 @@ def main():
 # This block self-disables after first successful run via flag file
 # ═══════════════════════════════════════════════════════════════
 def emergency_sell_no_positions():
-    import os, time, requests as _req
+    import os, time, requests as _req, sys, subprocess
     FLAG = "/opt/polymarket-agent/.emergency_sell_done"
     if os.path.exists(FLAG):
         return  # already ran
+    
+    # Run sell as subprocess to avoid executor cache import issues
+    sell_code = """
+import sys, os, time, requests
+sys.path.insert(0, '/opt/polymarket-agent')
+from dotenv import load_dotenv
+load_dotenv('/opt/polymarket-agent/.env')
+from py_clob_client.client import ClobClient
+from py_clob_client.order_builder.constants import SELL
+from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+
+PRIVATE_KEY = os.environ['POLYMARKET_PRIVATE_KEY']
+FUNDER      = os.environ['POLYMARKET_FUNDER_ADDRESS']
+TOKEN_ID    = '72387266160731568407931217212970384645889453148307103504977225646121486508046'
+SHARES      = 391.0
+
+client = ClobClient("https://clob.polymarket.com", key=PRIVATE_KEY, chain_id=137, signature_type=2, funder=FUNDER)
+client.set_api_creds(client.create_or_derive_api_creds())
+
+mid_r = requests.get(f"https://clob.polymarket.com/midpoint?token_id={TOKEN_ID}", timeout=8)
+mid   = float(mid_r.json().get('mid', 0))
+tick_r = requests.get(f"https://clob.polymarket.com/tick-size?token_id={TOKEN_ID}", timeout=8)
+tick  = float(tick_r.json().get('minimum_tick_size', 0.01))
+sell_p = max(0.01, round(mid - 2*tick, 4))
+print(f"WTI sell: {SHARES}sh @ {sell_p:.4f} (mid={mid:.4f})")
+
+args    = OrderArgs(token_id=TOKEN_ID, price=sell_p, size=SHARES, side=SELL)
+options = PartialCreateOrderOptions(tick_size=tick, neg_risk=False)
+signed  = client.create_order(args, options)
+resp    = client.post_order(signed, OrderType.GTC)
+print(f"Result: {resp}")
+if resp and resp.get('success'):
+    print('SOLD OK')
+    sys.exit(0)
+else:
+    print(f'FAILED: {resp}')
+    sys.exit(1)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", sell_code],
+        capture_output=True, text=True, timeout=30,
+        env={**os.environ, "PYTHONPATH": "/opt/polymarket-agent"}
+    )
+    log(f"  WTI sell subprocess: rc={result.returncode}")
+    log(f"  {result.stdout.strip()}")
+    if result.stderr.strip():
+        log(f"  STDERR: {result.stderr.strip()[:200]}")
+    if result.returncode == 0:
+        open(FLAG, "w").write("done")
+        log("=== EMERGENCY SELL COMPLETE ===")
+    else:
+        log("=== EMERGENCY SELL FAILED — retry next run ===")
+    return
     
     log("=== EMERGENCY SELL: CEASEFIRE NO POSITIONS ===")
     
