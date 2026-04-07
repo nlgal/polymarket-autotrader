@@ -3274,9 +3274,172 @@ def run_cycle(client, state):
         return state
 
     log(f"Found {len(actionable)} opportunities [{mode} mode] | Free: ${available:.2f}:", Fore.GREEN)
+
+    # ── PRE-TRADE LIVE NEWS GATE ──────────────────────────────────────────────
+    # Before placing ANY trade this cycle, fetch the last 15 minutes of news
+    # on topics that overlap with our pending trades. If a breaking event is
+    # detected that directly contradicts the trade thesis, PAUSE that trade
+    # (not the whole bot) and re-score it next cycle with fresh data.
+    #
+    # Trigger events: ceasefire signed/rejected, invasion, regime fall,
+    # deal signed/collapsed, election result called.
+    # Each trade in actionable gets a _news_vetoed flag if it's invalidated.
+    #
+    # This prevents the Man City / WTI / ceasefire-NO recurrence:
+    # the bot scored on stale data, then placed on live markets that had moved.
+    def _live_news_veto(trade_list):
+        import re as _re
+        _BREAKING_PATTERNS = [
+            # Ceasefire / peace
+            (r"ceasefire (signed|reached|agreed|announced|in effect|deal)",
+             ["ceasefire", "cease", "iran", "israel", "hormuz", "military op"]),
+            (r"(deal|agreement|accord) (signed|reached|announced)",
+             ["iran", "ceasefire", "cease", "nuclear", "hormuz"]),
+            # Escalation
+            (r"(invasion|invad|troops enter|forces enter|bombs|strikes begin|war declared)",
+             ["iran", "taiwan", "china", "israel", "ukraine", "russia"]),
+            # Political resolution
+            (r"(election (result|won|called)|prime minister (named|elected|appointed))",
+             ["hungary", "orbán", "magyar", "viktor"]),
+            # Regime change
+            (r"(regime (fall|collapse|toppled)|government (fell|collapsed|overthrown))",
+             ["iran", "regime", "tehran"]),
+        ]
+
+        try:
+            import requests as _rq
+            # Build query from the markets in our trade list
+            q_texts = " ".join(m.get("question","") for m in trade_list).lower()
+
+            # Which RSS feeds to check
+            queries = []
+            if any(x in q_texts for x in ["iran","ceasefire","cease","hormuz","military"]):
+                queries.append("iran ceasefire deal april 2026")
+            if any(x in q_texts for x in ["hungary","orbán","magyar"]):
+                queries.append("hungary election april 2026")
+            if any(x in q_texts for x in ["taiwan","china"]):
+                queries.append("china taiwan invasion 2026")
+
+            if not queries:
+                return {}  # no relevant markets, skip check
+
+            breaking_headlines = []
+            cutoff_ts = __import__("time").time() - 900  # last 15 min
+
+            for query in queries[:2]:  # max 2 queries to stay fast
+                try:
+                    feed = _rq.get(
+                        f"https://news.google.com/rss/search?q={query.replace(' ','+')}"
+                        f"&hl=en-US&gl=US&ceid=US:en",
+                        timeout=6
+                    )
+                    if not feed.ok:
+                        continue
+                    items = _re.findall(r"<item>(.*?)</item>", feed.text, _re.DOTALL)
+                    for item in items[:8]:
+                        title_m = _re.search(r"<title>(.*?)</title>", item)
+                        date_m  = _re.search(r"<pubDate>(.*?)</pubDate>", item)
+                        if not title_m:
+                            continue
+                        headline = title_m.group(1).lower()
+                        # Only headlines from last 15 min get auto-veto;
+                        # last 2h headlines get a soft warning (logged, not vetoed)
+                        pub_str = date_m.group(1) if date_m else ""
+                        try:
+                            import email.utils as _eu
+                            pub_ts = _eu.parsedate_to_datetime(pub_str).timestamp()
+                        except:
+                            pub_ts = 0
+                        age_min = (__import__("time").time() - pub_ts) / 60 if pub_ts else 999
+
+                        for pattern, keywords in _BREAKING_PATTERNS:
+                            if _re.search(pattern, headline):
+                                if any(kw in headline for kw in keywords):
+                                    breaking_headlines.append({
+                                        "headline": title_m.group(1)[:120],
+                                        "age_min":  round(age_min, 1),
+                                        "pattern":  pattern,
+                                        "fresh":    age_min < 15,
+                                    })
+                                    break
+                except Exception:
+                    continue
+
+            if not breaking_headlines:
+                return {}
+
+            # Sort: freshest first
+            breaking_headlines.sort(key=lambda x: x["age_min"])
+
+            # Build veto map: for each pending trade, check if a headline
+            # directly contradicts its direction
+            vetoes = {}
+            for h in breaking_headlines:
+                hl = h["headline"].lower()
+                age = h["age_min"]
+                fresh = h["fresh"]  # < 15 min
+
+                for m in trade_list:
+                    q = m.get("question","").lower()
+                    action = m.get("action","")
+
+                    # Ceasefire signed → veto BUY_NO on ceasefire markets
+                    if _re.search(r"ceasefire (signed|reached|agreed|in effect)", hl):
+                        if "ceasefire" in q and action == "BUY_NO":
+                            vetoes[id(m)] = (h, "ceasefire confirmed — NO thesis invalidated")
+                    # Ceasefire rejected/collapsed → veto BUY_YES on ceasefire
+                    if _re.search(r"ceasefire (rejected|collapsed|failed|no deal)", hl):
+                        if "ceasefire" in q and action == "BUY_YES":
+                            if fresh:
+                                vetoes[id(m)] = (h, "ceasefire rejected — YES thesis invalidated")
+                    # Deal signed → veto NO on related market
+                    if _re.search(r"(deal|agreement) (signed|reached)", hl):
+                        if any(x in q for x in ["military op","hormuz","nuclear","iran"]) and action == "BUY_NO":
+                            vetoes[id(m)] = (h, "deal reached — NO thesis invalidated")
+                    # Invasion/escalation → veto NO on conflict-escalation markets
+                    if _re.search(r"(invasion|invad|bombs|strikes begin)", hl):
+                        if any(x in q for x in ["invade","invasion","forces enter"]) and action == "BUY_NO":
+                            vetoes[id(m)] = (h, "invasion confirmed — NO thesis invalidated")
+                    # Election called → veto opposite direction
+                    if _re.search(r"(prime minister (named|elected)|election (won|called))", hl):
+                        if "hungary" in q or "prime minister" in q:
+                            # Veto whichever candidate lost
+                            if "orbán" in hl or "orban" in hl:
+                                if "magyar" in q and action == "BUY_YES":
+                                    vetoes[id(m)] = (h, "Orbán confirmed PM — Magyar YES invalidated")
+                            elif "magyar" in hl:
+                                if "orbán" in q and action == "BUY_YES":
+                                    vetoes[id(m)] = (h, "Magyar confirmed PM — Orbán YES invalidated")
+
+            return vetoes, breaking_headlines
+
+        except Exception as _nge:
+            log(f"  [NEWS GATE] check failed (non-fatal): {_nge}")
+            return {}, []
+
+    # Run the gate
+    _veto_result = _live_news_veto(actionable)
+    _vetoes, _breaking = (_veto_result if isinstance(_veto_result, tuple) else ({}, []))
+
+    if _breaking:
+        log(f"  [NEWS GATE] {len(_breaking)} breaking headline(s) detected:", Fore.YELLOW)
+        for _h in _breaking[:3]:
+            log(f"    [{_h['age_min']:.0f}m ago] {_h['headline'][:100]}", Fore.YELLOW)
+        if _vetoes:
+            log(f"  [NEWS GATE] {len(_vetoes)} trade(s) VETOED — re-scores next cycle", Fore.RED)
+    else:
+        log("  [NEWS GATE] clean — no breaking events in last 15 min", Fore.GREEN)
+
     trades_placed = 0
 
     for m in actionable:
+        # ── News gate veto check ───────────────────────────────────────────────
+        if id(m) in _vetoes:
+            _vh, _vreason = _vetoes[id(m)]
+            log(f"  [NEWS GATE VETO] {m.get('action')} '{m.get('question','')[:50]}': {_vreason}", Fore.RED)
+            log(f"    Headline ({_vh['age_min']:.0f}m ago): {_vh['headline'][:90]}", Fore.RED)
+            continue
+        # ─────────────────────────────────────────────────────────────────────
         action = m["action"]
         edge   = m.get("edge", 0)
         market_id = m.get("id", "")
