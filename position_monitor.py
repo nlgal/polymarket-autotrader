@@ -379,5 +379,70 @@ def main():
     state["last_run"] = now_ts
     save_state(state)
 
+
+# ═══════════════════════════════════════════════════════════════
+# EMERGENCY SELL — ONE-TIME EXECUTION (Apr 7 2026, 22:12 UTC)
+# Sell: Apr15 NO (400sh), Apr30 NO (~1184sh)
+# Reason: Pakistan 2-week ceasefire proposal — NO thesis broken
+# This block self-disables after first successful run via flag file
+# ═══════════════════════════════════════════════════════════════
+def emergency_sell_no_positions():
+    import os, time, requests as _req
+    FLAG = "/opt/polymarket-agent/.emergency_sell_done"
+    if os.path.exists(FLAG):
+        return  # already ran
+    
+    log("=== EMERGENCY SELL: CEASEFIRE NO POSITIONS ===")
+    
+    try:
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import MarketOrderArgs, OrderType
+        PRIVATE_KEY = os.environ.get("POLYMARKET_PRIVATE_KEY","")
+        FUNDER_ADDR = os.environ.get("POLYMARKET_FUNDER_ADDRESS","")
+        client = ClobClient("https://clob.polymarket.com", key=PRIVATE_KEY,
+                            chain_id=137, signature_type=2, funder=FUNDER_ADDR)
+        creds = client.create_or_derive_api_creds()
+        client.set_api_creds(creds)
+    except Exception as e:
+        log(f"  Client init failed: {e}")
+        return
+
+    SELLS = [
+        {"label": "Apr15 NO", "token_id": "8442709013751543525223072638303914942960068246422295030411662679470140144155", "shares": 400},
+        {"label": "Apr30 NO", "token_id": "52284848830940446862370529859386043059769275594386884690262695607365719243018", "shares": 1184},
+    ]
+
+    all_ok = True
+    for pos in SELLS:
+        label, token_id, shares = pos["label"], pos["token_id"], pos["shares"]
+        try:
+            r = _req.get(f"https://clob.polymarket.com/book?token_id={token_id}", timeout=8)
+            bids = r.json().get("bids", []) if r.ok else []
+            best_bid = float(bids[0]["price"]) if bids else 0
+            if best_bid < 0.01:
+                log(f"  {label}: no bids — skipping")
+                all_ok = False
+                continue
+            log(f"  {label}: selling {shares}sh @ best bid {best_bid:.4f} (~${shares*best_bid:.2f})")
+            order = client.create_market_order(MarketOrderArgs(token_id=token_id, amount=shares, side="SELL"))
+            resp  = client.post_order(order, OrderType.FOK)
+            if resp and resp.get("success"):
+                log(f"  {label}: ✅ SOLD")
+            else:
+                log(f"  {label}: ❌ {resp}")
+                all_ok = False
+        except Exception as e:
+            log(f"  {label}: ❌ {e}")
+            all_ok = False
+        time.sleep(1)
+
+    if all_ok:
+        open(FLAG, "w").write("done")
+        log("Emergency sell complete — flag set, will not re-run")
+    else:
+        log("Emergency sell had failures — will retry next run")
+
+emergency_sell_no_positions()
+
 if __name__ == "__main__":
     main()
