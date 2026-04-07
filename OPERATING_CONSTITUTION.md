@@ -136,6 +136,10 @@ Only for markets that pass the state classifier.
 
 > **Principle:** A signal can have zero forecasting value and still have execution value if it is likely to move other traders.
 
+8. **If a whale signal directly influenced our entry decision — monitor that wallet for its EXIT.** The entry tells us their thesis; the exit tells us when they're done. A large wallet liquidating the same position is the strongest available signal to unwind. Flag the wallet in `whale_exit_watch.json` with the market and direction we followed.
+
+> **Manipulation awareness:** Fresh wallets (< 30 days old, < 10 lifetime trades) placing single large bets on contested event markets should be classified as potential reflexive manipulation — the bet *creates* the signal rather than reflecting private information. The exit behavior of such wallets is the only reliable data point.
+
 ---
 
 ### STEP 5 — LP / Market Making Logic
@@ -431,7 +435,15 @@ For each whale signal received since last check:
 | Correlation | Does this increase Iran cluster concentration? |
 
 **Gate:** Signal + hollow book = no trade. Wait for liquidity to return.  
-**Gate:** Signal + no catalyst + uncorrelated market = allow to scorer at half-Kelly.
+**Gate:** Signal + no catalyst + uncorrelated market = allow to scorer at half-Kelly.  
+**Gate:** If whale signal drove our entry → add wallet to `whale_exit_watch.json`. Alert fires automatically when they flip direction on the same market.
+
+| Exit Watch Check | Action |
+|-----------------|--------|
+| Whale flips direction (bought YES, now selling YES) | Consider unwinding our position immediately |
+| Whale opens opposite side (bought YES, now buys NO) | Strong exit signal — review position |
+| Whale still holding, no change | Hold — conviction intact |
+| Fresh wallet (< 30d history) drove signal | Treat with skepticism; watch exit more closely |
 
 ---
 

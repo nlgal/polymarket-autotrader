@@ -32,6 +32,7 @@ WATCHLIST_FILE   = '/opt/polymarket-agent/whale_watchlist.json'
 STATE_FILE       = '/opt/polymarket-agent/whale_monitor_state.json'
 
 MIN_TRADE_SIZE   = 500    # Only alert on trades >= $500
+EXIT_WATCH_FILE  = '/opt/polymarket-agent/whale_exit_watch.json'  # wallets to monitor for exits
 LOOKBACK_HOURS   = 2      # Check last 2 hours of activity
 
 def tg(msg):
@@ -63,6 +64,18 @@ def load_state():
 def save_state(state):
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f, indent=2)
+
+def load_exit_watch():
+    """Load list of whale wallets we're watching for exits."""
+    try:
+        with open(EXIT_WATCH_FILE) as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_exit_watch(data):
+    with open(EXIT_WATCH_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
 
 def get_recent_trades(wallet, since_ts):
     """Fetch trades for wallet since since_ts. Returns list of trade dicts."""
@@ -154,6 +167,18 @@ def format_alert(whale, trade):
 
     direction = f'{outcome} {side}'.strip().upper()
 
+    # Check if this wallet is being exit-watched (we followed their entry)
+    exit_watch = load_exit_watch()
+    exit_flag = ''
+    if wallet in exit_watch:
+        watched = exit_watch[wallet]
+        followed_market = watched.get('market_title', '')[:40]
+        followed_dir = watched.get('direction', '')
+        exit_flag = f'\n⚠️ <b>EXIT WATCH</b>: We followed this wallet into {followed_dir} on {followed_market}'
+        # If they're now trading the SAME market in OPPOSITE direction → exit signal
+        if condition == watched.get('condition_id', '') and outcome != watched.get('outcome', ''):
+            exit_flag = f'\n🚨 <b>WHALE EXITING</b>: Selling {watched.get("direction","")} on {followed_market} — consider unwinding our position'
+
     msg = (
         f'<b>🐳 Whale Alert</b>\n'
         f'<b>{name}</b> just entered\n\n'
@@ -164,6 +189,8 @@ def format_alert(whale, trade):
         f'{our_str}\n'
         f'<b>Whale stats:</b> ${pnl:,.0f} all-time PnL ({pnl_ratio:.0%} efficiency)\n'
     )
+    if exit_flag:
+        msg += exit_flag
     if slug:
         msg += f'\nhttps://polymarket.com/event/{slug}'
 
