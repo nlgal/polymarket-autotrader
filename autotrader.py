@@ -3400,6 +3400,18 @@ def run_cycle(client, state):
                     if _re.search(r"(invasion|invad|bombs|strikes begin)", hl):
                         if any(x in q for x in ["invade","invasion","forces enter"]) and action == "BUY_NO":
                             vetoes[id(m)] = (h, "invasion confirmed — NO thesis invalidated")
+                    # Ceasefire / deal → veto oil HIGH targets (Hormuz reopens = supply up = price drops)
+                    if _re.search(r"ceasefire (signed|reached|agreed|in effect)|strait.*open|hormuz.*open", hl):
+                        if any(x in q for x in ["crude oil","wti","brent","oil price","$120","$110","$100","$90","hit (high)"]):
+                            if action == "BUY_YES":
+                                vetoes[id(m)] = (h, "ceasefire/Hormuz reopening → oil price spike thesis invalidated")
+
+                    # Escalation → veto oil LOW targets (war premium = price spikes, not falls)
+                    if _re.search(r"(strikes begin|invasion|bombs|hormuz closed|blockade)", hl):
+                        if any(x in q for x in ["crude oil","wti","brent","oil price","hit (low)"]):
+                            if action == "BUY_YES":
+                                vetoes[id(m)] = (h, "escalation confirmed → oil low target invalidated")
+
                     # Election called → veto opposite direction
                     if _re.search(r"(prime minister (named|elected)|election (won|called))", hl):
                         if "hungary" in q or "prime minister" in q:
