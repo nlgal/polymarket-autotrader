@@ -381,17 +381,16 @@ def main():
 
 
 # ═══════════════════════════════════════════════════════════════
-# EMERGENCY SELL — ONE-TIME EXECUTION (Apr 7 2026, 22:12 UTC)
-# Sell: Apr15 NO (400sh), Apr30 NO (~1184sh)
-# Reason: Pakistan 2-week ceasefire proposal — NO thesis broken
+# EMERGENCY SELL — ONE-TIME EXECUTION (Apr 7 2026, 22:54 UTC)
+# Sell: WTI Crude Oil $120 YES (391sh)
+# Reason: commodity price market blocked going forward; stale GDELT signal drove bad entry
 # This block self-disables after first successful run via flag file
 # ═══════════════════════════════════════════════════════════════
 def emergency_sell_no_positions():
     import os, time, requests as _req
     FLAG = "/opt/polymarket-agent/.emergency_sell_done"
-    # Flag cleared — retry each run until all sells succeed
-    # if os.path.exists(FLAG):
-    #     return
+    if os.path.exists(FLAG):
+        return  # already ran
     
     log("=== EMERGENCY SELL: CEASEFIRE NO POSITIONS ===")
     
@@ -409,8 +408,8 @@ def emergency_sell_no_positions():
         return
 
     SELLS = [
-        {"label": "Apr15 NO", "token_id": "8442709013751543525223072638303914942960068246422295030411662679470140144155", "shares": 400},
-        {"label": "Apr30 NO", "token_id": "52284848830940446862370529859386043059769275594386884690262695607365719243018", "shares": 1184},
+        # WTI $120 YES — bought by bot via stale GDELT signal, commodity market blocked going forward
+        {"label": "WTI $120 YES", "token_id": "72387266160731568407931217212970384645889453148307103504977225646121486508046", "shares": 391},
     ]
 
     all_ok = True

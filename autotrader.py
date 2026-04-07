@@ -1731,8 +1731,12 @@ def score_market(market, mode="NORMAL"):
                     log(f"  [GDELT] {len(_articles)} articles: {_headlines[0][:60]}", Fore.MAGENTA)
         except Exception as _ge:
             log(f"  [GDELT] Error: {_ge}", Fore.YELLOW)
+            gdelt_signal = None  # ensure it's None so source_count stays accurate
+            _gdelt_failed = True
 
     # Build consensus block for prompt
+    # If GDELT timed out AND it was the only geopolitical source, cap confidence
+    _gdelt_failed = locals().get("_gdelt_failed", False)
     consensus = ""
     source_count = 0
     if news:          consensus += f"SOURCE 1 (Perplexity/web): {news[:300]}\n"; source_count += 1
@@ -1740,6 +1744,12 @@ def score_market(market, mode="NORMAL"):
     if uw_text:       consensus += f"SOURCE 3 (Unusual Whales smart money): {uw_text[:200]}\n"; source_count += 1
     if whale_signal:  consensus += f"SOURCE 4 (Polymarket whale flow): {whale_signal[:200]}\n"; source_count += 1
     if gdelt_signal:  consensus += f"SOURCE 5 (GDELT real-time global news): {gdelt_signal[:400]}\n"; source_count += 1
+    # If GDELT timed out, note it in consensus so Claude knows data is stale
+    if _gdelt_failed:
+        consensus += "NOTE: GDELT timed out this cycle — real-time news signal unavailable. Treat geopolitical edge claims with extra skepticism.\n"
+        # Cap effective source count: a GDELT timeout on a geo market means
+        # we're missing the most time-sensitive source. Reduce by 1.
+        source_count = max(0, source_count - 1)
     if source_count >= 2:
         consensus += f"MULTI-SOURCE CONFIDENCE: {source_count}/5 sources have data — weight accordingly.\n"
 
@@ -1948,7 +1958,21 @@ def _pre_trade_checklist(market, action, source="unknown"):
         # Has catalyst — log it and allow through to scorer
         log(f"  [PREFLIGHT] Fee/uncategorized market with catalyst — allowing scorer: {q[:50]}", Fore.CYAN)
 
-    # ── Check 3: Sports market price sanity ──────────────────────────────────
+    # ── Check 3: Block finance/commodity price-level markets ─────────────────
+    # WTI $120, ETH $2100, BTC $90K etc. are fee markets with 1.0-1.8% fees
+    # and no informational edge for us — we have no commodity price model.
+    # These are exactly the "Fee market not in approved category" type, but the
+    # catalyst check (UW signal) was passing them through. Block explicitly.
+    PRICE_LEVEL_KEYWORDS = [
+        "hit (high)", "hit (low)", "reach $", "above $", "below $",
+        "crude oil", "wti", "brent", "natural gas", "gold price",
+        "silver price", "copper price",
+    ]
+    if is_fee and any(kw in q.lower() for kw in PRICE_LEVEL_KEYWORDS):
+        return False, (f"[PREFLIGHT] Finance/commodity price-level market blocked: "
+                       f"'{q[:60]}'. No edge without price model. Source={source}")
+
+    # ── Check 4: Sports market price sanity ──────────────────────────────────
     # Sports market buying YES < 0.25 = lottery ticket even if keywords matched.
     if is_sports_market(q) and action == "BUY_YES" and yes_p < 0.25:
         return False, (f"[PREFLIGHT] Sports BUY_YES at {yes_p:.3f} < 0.25. "
