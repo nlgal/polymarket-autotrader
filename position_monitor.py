@@ -389,8 +389,9 @@ def main():
 def emergency_sell_no_positions():
     import os, time, requests as _req
     FLAG = "/opt/polymarket-agent/.emergency_sell_done"
-    if os.path.exists(FLAG):
-        return  # already ran
+    # Flag cleared — retry each run until all sells succeed
+    # if os.path.exists(FLAG):
+    #     return
     
     log("=== EMERGENCY SELL: CEASEFIRE NO POSITIONS ===")
     
@@ -424,8 +425,26 @@ def emergency_sell_no_positions():
                 all_ok = False
                 continue
             log(f"  {label}: selling {shares}sh @ best bid {best_bid:.4f} (~${shares*best_bid:.2f})")
-            order = client.create_market_order(MarketOrderArgs(token_id=token_id, amount=shares, side="SELL"))
-            resp  = client.post_order(order, OrderType.FOK)
+            from py_clob_client.clob_types import OrderArgs, TradeParams
+            from py_clob_client.constants import BUY, SELL
+            # For SELL: create limit order at 1¢ (will fill as market against any bid)
+            # Get best bid first
+            best_bid_r = _req.get(f"https://clob.polymarket.com/book?token_id={token_id}", timeout=8)
+            bids_list = best_bid_r.json().get("bids", []) if best_bid_r.ok else []
+            if not bids_list:
+                log(f"  {label}: no bids in book")
+                all_ok = False
+                continue
+            sell_price = float(bids_list[0]["price"])
+            # Build order: sell `shares` tokens at sell_price
+            order_args = OrderArgs(
+                price=sell_price,
+                size=float(shares),
+                side=SELL,
+                token_id=token_id,
+            )
+            order = client.create_order(order_args)
+            resp  = client.post_order(order, OrderType.GTC)
             if resp and resp.get("success"):
                 log(f"  {label}: ✅ SOLD")
             else:
@@ -438,9 +457,9 @@ def emergency_sell_no_positions():
 
     if all_ok:
         open(FLAG, "w").write("done")
-        log("Emergency sell complete — flag set, will not re-run")
+        log("=== EMERGENCY SELL COMPLETE ===")
     else:
-        log("Emergency sell had failures — will retry next run")
+        log("=== EMERGENCY SELL: some failures, check positions ===")
 
 emergency_sell_no_positions()
 
