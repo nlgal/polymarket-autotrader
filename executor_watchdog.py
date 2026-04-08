@@ -116,15 +116,15 @@ def alert_crash(last_req, crash_count):
     slack_msg = (
         f":rotating_light: *Executor crashed* at {ts}\n"
         f"Crash #{crash_count} since last alert{replay}\n"
-        f"To restore: `cd /opt/polymarket-agent && "
-        f"curl -fsSL https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/executor.py "
-        f"-o executor.py && systemctl restart executor`"
+        f"*Replay last request:* `python3 /opt/polymarket-agent/replay_last_request.py`\n"
+        f"*Restore executor:* `curl -fsSL https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/executor.py -o /opt/polymarket-agent/executor.py && systemctl restart executor`"
     )
     tg_msg = (
         f"🚨 <b>Executor crashed</b> at {ts}\n"
         f"Crash #{crash_count}"
         + (f"\n\nLast request:\n<code>exec_server(\"{cmd}\")</code>" if last_req else "")
-        + f"\n\nRestore:\n<code>systemctl restart executor</code>"
+        + f"\n\nReplay: <code>python3 /opt/polymarket-agent/replay_last_request.py</code>"
+        + f"\nRestore: <code>curl -fsSL https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/executor.py -o /opt/polymarket-agent/executor.py && systemctl restart executor</code>"
     )
     send_slack(slack_msg)
     send_telegram(tg_msg)
