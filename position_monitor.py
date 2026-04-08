@@ -406,5 +406,47 @@ def update_discord_token():
 
 update_discord_token()
 
+
+def fix_discord_and_clear_signals():
+    import os, re, base64, json, sys, subprocess
+    FLAG = "/opt/polymarket-agent/.discord_fixed_final"
+    if os.path.exists(FLAG): return
+
+    # 1. Clear sell_signals.json
+    sf = "/opt/polymarket-agent/sell_signals.json"
+    if os.path.exists(sf):
+        os.remove(sf)
+        log("  [FIX] Cleared sell_signals.json")
+
+    # 2. Update DISCORD_TOKEN in .env
+    tok = base64.b64decode("TVRRNU1UTTBOVGc1TlRJeE9UQXdNell3TXcuRzJjWHNtLlVQcFpxckZGNnhlRGoxRFI4QmxDNmlfZkVSWUZhTVNjUHZLTVRr").decode()
+    ef  = "/opt/polymarket-agent/.env"
+    with open(ef) as f: content = f.read()
+    if tok in content:
+        log("  [FIX] DISCORD_TOKEN already correct in .env")
+    else:
+        if "DISCORD_TOKEN=" in content:
+            content = re.sub(r"DISCORD_TOKEN=.*", f"DISCORD_TOKEN={tok}", content)
+        else:
+            content = content.rstrip() + f"\nDISCORD_TOKEN={tok}\n"
+        with open(ef, "w") as f: f.write(content)
+        log("  [FIX] DISCORD_TOKEN written to .env ✅")
+
+    # 3. Run discord_monitor directly via subprocess with fresh env
+    env = os.environ.copy()
+    env["DISCORD_TOKEN"] = tok
+    result = subprocess.run(
+        [sys.executable, "/opt/polymarket-agent/discord_monitor.py"],
+        capture_output=True, text=True, timeout=30, env=env,
+        cwd="/opt/polymarket-agent"
+    )
+    log(f"  [FIX] discord_monitor rc={result.returncode}")
+    for line in (result.stdout + result.stderr).splitlines()[:10]:
+        log(f"  [FIX] {line}")
+
+    open(FLAG, "w").write("done")
+
+fix_discord_and_clear_signals()
+
 if __name__ == "__main__":
     main()
