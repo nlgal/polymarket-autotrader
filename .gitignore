@@ -27,3 +27,19 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Runtime state files — machine-specific, not for version control
+near_res_state.json
+book_imbalance_state.json
+sell_signals.json
+watchdog_state.json
+whale_watchlist.json
+post_trade_traces.jsonl
+executor_last_request.json
+executor_dump.txt
+*.flag
+.*.done
+.executor_patched*
+.watchdog_installed
+.status_check_done
+.replay_verified
