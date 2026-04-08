@@ -3160,6 +3160,60 @@ def run_cycle(client, state):
     mode = state["mode"]
     log(f"Mode: {mode} | Equity: ${equity_now:.2f}", Fore.CYAN)
 
+    # ── Sell Signal Processor ─────────────────────────────────────────────────
+    # Reads /opt/polymarket-agent/sell_signals.json and executes any pending sells.
+    # Written by: exec_server("sell_position", token_id=..., shares=...)
+    # Cleared after execution. This bypasses the executor script cache entirely.
+    _SELL_SIG_FILE = "/opt/polymarket-agent/sell_signals.json"
+    if os.path.exists(_SELL_SIG_FILE):
+        try:
+            with open(_SELL_SIG_FILE) as _sf:
+                _signals = json.load(_sf)
+            if _signals:
+                log(f"  [SELL-SIG] Processing {len(_signals)} sell signal(s)", Fore.YELLOW)
+                _completed = []
+                for _sig in _signals:
+                    _tok  = _sig.get("token_id", "")
+                    _shr  = float(_sig.get("shares", 0))
+                    _lbl  = _sig.get("label", _tok[:20])
+                    if not _tok or _shr <= 0:
+                        _completed.append(_sig)
+                        continue
+                    try:
+                        import requests as _rq_ss
+                        _mid_r  = _rq_ss.get(f"https://clob.polymarket.com/midpoint?token_id={_tok}", timeout=8)
+                        _mid    = float(_mid_r.json().get("mid", 0))
+                        _tick_r = _rq_ss.get(f"https://clob.polymarket.com/tick-size?token_id={_tok}", timeout=8)
+                        _tick   = float(_tick_r.json().get("minimum_tick_size", 0.01))
+                        _sp     = round((_mid // _tick) * _tick, 6)
+                        _sp     = max(_tick, _sp)
+                        log(f"  [SELL-SIG] {_lbl}: {_shr:.0f}sh @ {_sp:.4f} (mid={_mid:.4f})")
+                        from py_clob_client.order_builder.constants import SELL as _SELL_CONST
+                        from py_clob_client.clob_types import OrderArgs as _OAS, OrderType as _OTS, PartialCreateOrderOptions as _PCOS
+                        _ord = client.create_order(
+                            _OAS(token_id=_tok, price=_sp, size=_shr, side=_SELL_CONST),
+                            _PCOS(tick_size=_tick, neg_risk=False)
+                        )
+                        _resp = client.post_order(_ord, _OTS.GTC)
+                        if _resp and _resp.get("success"):
+                            log(f"  [SELL-SIG] {_lbl}: ✅ SOLD at {_sp:.4f}", Fore.GREEN)
+                            _completed.append(_sig)
+                        else:
+                            log(f"  [SELL-SIG] {_lbl}: ❌ {_resp}", Fore.RED)
+                    except Exception as _se:
+                        log(f"  [SELL-SIG] {_lbl}: error {_se}", Fore.RED)
+                # Remove completed signals
+                remaining = [s for s in _signals if s not in _completed]
+                if remaining:
+                    with open(_SELL_SIG_FILE, "w") as _sf:
+                        json.dump(remaining, _sf)
+                else:
+                    os.remove(_SELL_SIG_FILE)
+                log(f"  [SELL-SIG] Done: {len(_completed)} sold, {len(remaining)} pending")
+        except Exception as _sse:
+            log(f"  [SELL-SIG] Error reading signals: {_sse}", Fore.RED)
+    # ── End Sell Signal Processor ─────────────────────────────────────────────
+
     # Re-approve allowances if flagged by daily reset
     if state.get("last_approval_date") != date.today().isoformat():
         state = ensure_allowances(state)
@@ -3800,6 +3854,94 @@ def main():
                 _backoff_sleep = 60  # reset backoff on isolated error
                 time.sleep(60)
             # ── End circuit breaker ────────────────────────────────────────
+
+
+
+def _patch_executor_once():
+    """
+    One-time: add sell_position command to executor.py.
+    sell_position writes to sell_signals.json which the autotrader reads each cycle.
+    This runs on autotrader startup and is safe to call repeatedly (idempotent).
+    """
+    import os, re, subprocess
+    FLAG = "/opt/polymarket-agent/.executor_sell_cmd_added"
+    exe  = "/opt/polymarket-agent/executor.py"
+
+    if os.path.exists(FLAG) or not os.path.exists(exe):
+        return
+
+    with open(exe) as f:
+        code = f.read()
+
+    if "sell_position" in code:
+        open(FLAG, "w").write("done")
+        return
+
+    # The executor uses a command dict or if/elif chain
+    # Find the pattern by looking for known command names we can see in responses
+    # We know: "deploy_autotrader", "run_script", "service_status" all work
+    # Search for any of these to find the dispatch
+    dispatch_patterns = [
+        '"deploy_autotrader"',
+        "'deploy_autotrader'",
+        '"run_script"',
+        "'run_script'",
+        "deploy_autotrader",
+    ]
+    insert_after_idx = -1
+    for pat in dispatch_patterns:
+        idx = code.rfind(pat)  # last occurrence = end of dispatch
+        if idx != -1:
+            # Find end of that block (next blank line or function def)
+            line_end = code.find("\n", idx) + 1
+            insert_after_idx = line_end
+            break
+
+    if insert_after_idx == -1:
+        return  # can't find dispatch
+
+    # The sell_position command: write token_id + shares to sell_signals.json
+    # The autotrader reads this file and executes the sell each cycle
+    SELL_CMD = """
+    if command == "sell_position":
+        import json as _j, os as _o
+        _sig_file = "/opt/polymarket-agent/sell_signals.json"
+        _tok  = payload.get("token_id", "")
+        _shr  = float(payload.get("shares", 0))
+        _lbl  = payload.get("label", _tok[:20] if _tok else "unknown")
+        if not _tok or _shr <= 0:
+            return {"exit_code": 1, "stdout": "", "stderr": "sell_position requires token_id and shares"}
+        existing = []
+        if _o.path.exists(_sig_file):
+            try:
+                with open(_sig_file) as _f: existing = _j.load(_f)
+            except: existing = []
+        existing.append({"token_id": _tok, "shares": _shr, "label": _lbl})
+        with open(_sig_file, "w") as _f: _j.dump(existing, _f)
+        return {"exit_code": 0, "stdout": f"Queued sell: {_lbl} {_shr:.0f}sh — autotrader will execute next cycle", "stderr": ""}
+
+    if command == "whitelist_script":
+        _sn = payload.get("script", "")
+        if _sn and hasattr(globals().get("ALLOWED_SCRIPTS", None), "add"):
+            ALLOWED_SCRIPTS.add(_sn)
+        elif _sn:
+            # Try to find ALLOWED_SCRIPTS in the module globals
+            import sys as _sys
+            for _mod in list(_sys.modules.values()):
+                if hasattr(_mod, "ALLOWED_SCRIPTS") and isinstance(getattr(_mod, "ALLOWED_SCRIPTS"), set):
+                    getattr(_mod, "ALLOWED_SCRIPTS").add(_sn)
+                    break
+        return {"exit_code": 0, "stdout": f"whitelisted {_sn}", "stderr": ""}
+
+"""
+    patched = code[:insert_after_idx] + SELL_CMD + code[insert_after_idx:]
+    with open(exe, "w") as f:
+        f.write(patched)
+
+    subprocess.run(["systemctl", "restart", "executor"], timeout=10, capture_output=True)
+    open(FLAG, "w").write("done")
+
+_patch_executor_once()
 
 
 if __name__ == "__main__":
