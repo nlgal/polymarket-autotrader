@@ -531,14 +531,14 @@ def main():
 
     # ── EMERGENCY SELL: Timberwolves win position (self-disabling) ───────────
     import os as _eos2, requests as _rq3
-    _TWP_FLAG = "/opt/polymarket-agent/.twolves_sell_done"
+    _TWP_FLAG = "/opt/polymarket-agent/.twolves_sell_done2"
     if not _eos2.path.exists(_TWP_FLAG):
         try:
             _TOKEN2  = "67001198723470928325024317997267482884145695729401441328875363513742499928133"
             _SHARES2 = float(5409.4955)
             _mid2    = float(_rq3.get(f"https://clob.polymarket.com/midpoint?token_id={_TOKEN2}", timeout=8).json().get("mid", 0))
             _tick2   = float(_rq3.get(f"https://clob.polymarket.com/tick-size?token_id={_TOKEN2}", timeout=8).json().get("minimum_tick_size", 0.01))
-            _sp2     = max(0.01, round(_mid2 - _tick2, 4))
+            _sp2     = max(0.01, round((_mid2 // _tick2) * _tick2, 4))
             log(f"[TWP SELL] {_SHARES2:.0f}sh @ {_sp2:.4f} (mid={_mid2:.4f})")
             from py_clob_client.order_builder.constants import SELL as _S2
             from py_clob_client.clob_types import OrderArgs as _OA3, OrderType as _OT3, PartialCreateOrderOptions as _PCO3
