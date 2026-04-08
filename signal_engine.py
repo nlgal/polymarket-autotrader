@@ -51,7 +51,7 @@ SIGNAL_ICS = {
     "term_structure":  0.14,
     "insider_flow":    0.11,
     "calibration":     0.08,
-    "news_velocity":   0.07,
+    "news_velocity":   0.09,   # Raised from 0.07: backtest IC=0.163 (lifetime max), live estimate ~0.09
     "microstructure":  0.05,
     "markov":          0.03,   # Reduced from 0.09 post-backtest: IC=0.03 on 16 markets
 }

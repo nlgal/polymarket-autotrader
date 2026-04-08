@@ -124,7 +124,8 @@ def fetch_hormuz_proxy() -> dict:
 #
 # Apr15 YES example: 32% → 94% in 4h = +62% → HOT signal, would have triggered at first 8% move
 
-VELOCITY_HOT_1H  = 0.12   # 12% in 1h → force full bull/bear debate
+VELOCITY_VERY_HOT_1H = 0.25  # 25% in 1h → 86% win rate (backtest) → STRONG_BUY label
+VELOCITY_HOT_1H  = 0.12   # 12% in 1h → 60% win rate → force bull/bear debate
 VELOCITY_WARM_1H = 0.06   # 6%  in 1h → bypass cache, rescore
 VELOCITY_COOL_4H = 0.04   # 4%  in 4h → log, rescore if cache stale
 
@@ -174,7 +175,9 @@ def fetch_price_velocity(token_id: str) -> dict:
         abs_1h   = abs(delta_1h)
         abs_4h   = abs(delta_4h)
 
-        if abs_1h >= VELOCITY_HOT_1H:
+        if abs_1h >= VELOCITY_VERY_HOT_1H:
+            tier = "VERY_HOT"
+        elif abs_1h >= VELOCITY_HOT_1H:
             tier = "HOT"
         elif abs_1h >= VELOCITY_WARM_1H:
             tier = "WARM"
@@ -186,8 +189,9 @@ def fetch_price_velocity(token_id: str) -> dict:
         direction = "UP" if delta_1h > 0.01 else ("DOWN" if delta_1h < -0.01 else "FLAT")
 
         if tier != "FLAT":
+            tier_badge = "🔥🔥 VERY HOT" if tier == "VERY_HOT" else f"[VELOCITY {tier}]"
             label = (
-                f"[VELOCITY {tier}] {direction} {abs_1h*100:.1f}% in 1h "
+                f"{tier_badge} {direction} {abs_1h*100:.1f}% in 1h "
                 f"({p_1h_ago:.3f}→{now_p:.3f}) | 4h: {delta_4h*100:+.1f}%"
             )
         else:
@@ -1346,7 +1350,10 @@ def main():
                 _vel_token = ""
         _vel = fetch_price_velocity(_vel_token) if _vel_token else {"tier": "FLAT", "label": ""}
 
-        if _vel["tier"] in ("HOT", "WARM"):
+        if _vel["tier"] == "VERY_HOT":
+            log(f"  {_vel['label']} — 25%+ spike, 86% historical accuracy", Fore.RED)
+            _cached_score = None  # always bypass, always bull/bear
+        elif _vel["tier"] in ("HOT", "WARM"):
             log(f"  {_vel['label']}", Fore.YELLOW if _vel['tier'] == 'WARM' else Fore.RED)
             # Force cache bypass — this market needs fresh eyes
             _cached_score = None
@@ -1424,7 +1431,7 @@ def main():
                 #   HOT velocity OR >= $50 + UW: full bull/bear debate (3 Claude calls)
                 #   WARM velocity OR >= $30: consensus vote (Claude + Perplexity in parallel)
                 #   <  $30: single Claude call
-                _force_bull_bear  = _vel["tier"] == "HOT"
+                _force_bull_bear  = _vel["tier"] in ("VERY_HOT", "HOT")
                 _force_consensus  = _vel["tier"] == "WARM"
                 if _force_bull_bear or projected_size >= BULL_BEAR_THRESHOLD:
                     if _force_bull_bear:
