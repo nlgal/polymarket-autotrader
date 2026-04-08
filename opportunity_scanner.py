@@ -17,6 +17,7 @@ Runs on server via executor. Uses same .env as autotrader.
 import os, sys, re, json, math, time, datetime, requests
 sys.path.insert(0, '/opt/polymarket-agent')
 from dotenv import load_dotenv
+from signal_engine import run_signal_engine
 load_dotenv('/opt/polymarket-agent/.env')
 
 # ── Hormuz / Iran Conflict Proxy Signal ───────────────────────────────────────
@@ -967,6 +968,33 @@ def score_with_claude(question, yes_p, description, news_snippets, uw_summary=""
             pass  # non-fatal
     # ─────────────────────────────────────────────────────────────────────────
 
+    # ── Signal Engine (5 independent signals + empirical Kelly) ─────────────
+    _yes_token = ""
+    try:
+        # Extract token from description context if present (opportunity_scanner passes it)
+        import re as _re
+        _m = _re.search(r"YES token:\s*([0-9]{20,})", description)
+        if _m: _yes_token = _m.group(1)
+    except: pass
+
+    # Use the Hormuz signal already fetched if available; otherwise fetch a neutral fallback
+    _vel_data = locals().get('_vel', {"tier": "FLAT"})
+
+    _sig = run_signal_engine(
+        question       = question,
+        yes_p          = yes_p,
+        yes_token      = _yes_token,
+        condition_id   = "",  # scanner passes raw market dict elsewhere
+        description    = description,
+        uw_summary     = uw_summary,
+        vel_data       = _vel_data,
+        available_cash = 300,   # scanner-level Kelly used for guidance only
+        min_size       = MIN_TRADE_SIZE,
+        max_size       = MAX_TRADE_SIZE,
+    )
+    _signal_section = f"\n\n{_sig['signal_summary']}"
+    # ─────────────────────────────────────────────────────────────────────────
+
     prompt = f"""You are a Nash Equilibrium Strategist and prediction market analyst. \
 You model markets as multi-player strategic games and find mispricings by identifying when the \
 current price deviates from the true equilibrium probability.
@@ -976,7 +1004,7 @@ CURRENT YES PRICE: {yes_p:.2f} (implies {yes_p*100:.0f}% probability)
 DESCRIPTION: {description}
 
 RECENT NEWS CONTEXT:
-{news_snippets}{_hormuz_section}{uw_section}{context_section}
+{news_snippets}{_hormuz_section}{uw_section}{context_section}{_signal_section}
 
 ANALYTICAL FRAMEWORK — apply this thinking before scoring:
 
@@ -1328,14 +1356,40 @@ def main():
             # ── OPT-2: Fast-reject gate — 1 cheap Haiku call before bull/bear ──
             # If there's clearly no edge, bail before spending 3 calls on debate.
             # Only gate when projected size would hit bull/bear path AND no UW signal.
+            # ── Empirical Kelly sizing (signal engine) ──────────────────────
             projected_size = min(MAX_TRADE_SIZE, cash_remaining * 0.3)
             projected_size = max(MIN_TRADE_SIZE, projected_size)
+
+            # Run signal engine for sizing guidance BEFORE gate/scoring
+            _yes_token_for_kelly = ""
+            try:
+                _tok = json.loads(mkt.get("clobTokenIds","[]") or "[]")
+                _yes_token_for_kelly = _tok[0] if _tok else ""
+            except:
+                pass
+            _sig_engine = run_signal_engine(
+                question       = q,
+                yes_p          = yes_p,
+                yes_token      = _yes_token_for_kelly,
+                condition_id   = mkt.get("conditionId", ""),
+                description    = mkt["description"],
+                uw_summary     = uw_summary_text,
+                vel_data       = _vel if '_vel' in locals() else {"tier": "FLAT"},
+                available_cash = cash_remaining,
+                min_size       = MIN_TRADE_SIZE,
+                max_size       = MAX_TRADE_SIZE,
+            )
+            _kelly_size = _sig_engine["kelly_size"]
+            if _kelly_size >= MIN_TRADE_SIZE:
+                log(f"  [KELLY] {q[:45]} → ${_kelly_size:.0f} ({_sig_engine['kelly']['reason']})")
+                projected_size = _kelly_size
             _skip_to_pass = False
             if projected_size >= BULL_BEAR_THRESHOLD and not has_insider:
                 _gate_prompt = (
                     f"Prediction market: '{q}'\n"
                     f"YES price: {yes_p:.2f} | Description: {mkt['description'][:200]}\n"
-                    f"News: {snippets[:300]}\n\n"
+                    f"News: {snippets[:300]}\n"
+                    f"Signal engine: {_sig_engine['signal_summary'][:250]}\n\n"
                     "Is there ANY genuine mispricing edge here (≥15pp) that a well-informed trader would act on?\n"
                     "Respond with ONLY: YES or NO. Do not explain."
                 )
