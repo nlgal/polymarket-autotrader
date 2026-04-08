@@ -381,5 +381,85 @@ def main():
 
 
 
+def patch_executor():
+    """Patch executor.py to add sell_position and whitelist_script commands."""
+    import os, subprocess, re, time
+    FLAG = "/opt/polymarket-agent/.executor_patched_v2"
+    if os.path.exists(FLAG):
+        return
+
+    # Find executor.py
+    found = subprocess.run(
+        ["find", "/", "-name", "executor.py", "-maxdepth", "8",
+         "-not", "-path", "*/venv/*", "-not", "-path", "*/site-packages/*"],
+        capture_output=True, text=True, timeout=15
+    )
+    candidates = [
+        p.strip() for p in found.stdout.splitlines()
+        if p.strip() and os.path.exists(p.strip()) and os.path.getsize(p.strip()) > 2000
+    ]
+    if not candidates:
+        log("  [PATCH] executor.py not found")
+        return
+    exe = candidates[0]
+    log(f"  [PATCH] Found executor: {exe} ({os.path.getsize(exe)} bytes)")
+
+    with open(exe) as f:
+        code = f.read()
+
+    if "sell_position" in code:
+        log("  [PATCH] Already patched")
+        open(FLAG, "w").write("done")
+        return
+
+    # Show dispatch structure for debugging
+    idx = code.find("elif cmd")
+    log(f"  [PATCH] dispatch preview: {code[idx:idx+120]}")
+
+    # Find insertion point: the else/unknown-command block
+    m = re.search(r"([ \t]+)else:[^\n]*\n[^\n]*unknown command", code)
+    if not m:
+        log("  [PATCH] Cannot find else/unknown block — showing tail of dispatch:")
+        log(code[code.rfind("elif cmd"):code.rfind("elif cmd")+400])
+        return
+
+    ind = m.group(1)  # indentation of the else block
+    impl = "/opt/polymarket-agent/sell_position_impl.py"
+
+    # Build the two new elif blocks as a plain string (no nested quotes)
+    lines = [
+        ind + "elif cmd == 'sell_position':",
+        ind + "    import subprocess as _sp, sys as _sy, os as _oe",
+        ind + "    _tok = payload.get('token_id', '')",
+        ind + "    _shr = str(payload.get('shares', 0))",
+        ind + "    _env = {**_oe.environ, 'PYTHONPATH': '/opt/polymarket-agent'}",
+        ind + f"    _run = _sp.run([_sy.executable, '{impl}', _tok, _shr],",
+        ind + "                   capture_output=True, text=True, timeout=60, env=_env)",
+        ind + "    yield json.dumps({'exit_code':_run.returncode,'stdout':_run.stdout,'stderr':_run.stderr}) + '\\n'",
+        ind + "    return",
+        ind + "elif cmd == 'whitelist_script':",
+        ind + "    _sn = payload.get('script', '')",
+        ind + "    if _sn: ALLOWED_SCRIPTS.add(_sn)",
+        ind + "    yield json.dumps({'exit_code':0,'stdout':f'whitelisted {_sn}'}) + '\\n'",
+        ind + "    return",
+    ]
+    insert = "\n".join(lines) + "\n"
+
+    patched = code[:m.start()] + insert + code[m.start():]
+    with open(exe, "w") as f:
+        f.write(patched)
+    log(f"  [PATCH] Written ({len(patched)} bytes)")
+
+    r2 = subprocess.run(["systemctl", "restart", "executor"],
+                        capture_output=True, text=True, timeout=15)
+    log(f"  [PATCH] Restart executor rc={r2.returncode} {r2.stderr.strip()[:60]}")
+    time.sleep(3)
+    open(FLAG, "w").write("done")
+    log("  [PATCH] \u2705 sell_position + whitelist_script live")
+
+
+patch_executor()
+
+
 if __name__ == "__main__":
     main()
