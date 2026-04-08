@@ -321,6 +321,13 @@ PRIORITY_WATCHLIST = [
         "label": "Forces Apr30",
         "label_match": "us forces enter iran by april 30",
     },
+    {
+        "label": "Hormuz traffic Apr30 YES",
+        "label_match": "strait of hormuz traffic returns to normal by end of april",
+        "preferred_side": "BUY_YES",
+        "fee_pct": 0.0,
+        "notes": "Post-ceasefire de-escalation. Zerosmart $3.6K UAE NO = same thesis. YES at 29c if Hormuz reopens.",
+    },
 ]
 ALREADY_IN_FILE  = "/opt/polymarket-agent/intelligence/existing_positions.json"
 SCAN_LOG         = "/opt/polymarket-agent/opportunity_scan.log"
