@@ -410,5 +410,30 @@ def fetch_signal_engine():
 
 fetch_signal_engine()
 
+
+def install_missing_modules():
+    import os, subprocess
+    FLAG = "/opt/polymarket-agent/.modules_installed_v3"
+    if os.path.exists(FLAG): return
+    base = "https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main"
+    dest = "/opt/polymarket-agent"
+    files = ["signal_engine.py", "very_hot_forward_test.py"]
+    all_ok = True
+    for fname in files:
+        path = f"{dest}/{fname}"
+        r = subprocess.run(
+            ["curl", "-fsSL", f"{base}/{fname}", "-o", path],
+            capture_output=True, timeout=30
+        )
+        size = os.path.getsize(path) if os.path.exists(path) else 0
+        log(f"  [INSTALL] {fname}: rc={r.returncode} size={size}b")
+        if r.returncode != 0 or size < 100:
+            all_ok = False
+    if all_ok:
+        open(FLAG, "w").write("done")
+        log("  [INSTALL] All modules installed ✅")
+
+install_missing_modules()
+
 if __name__ == "__main__":
     main()
