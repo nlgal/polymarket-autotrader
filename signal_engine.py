@@ -53,7 +53,7 @@ SIGNAL_ICS = {
     "calibration":     0.08,
     "news_velocity":   0.07,
     "microstructure":  0.05,
-    "markov":          0.09,
+    "markov":          0.03,   # Reduced from 0.09 post-backtest: IC=0.03 on 16 markets
 }
 
 
@@ -482,9 +482,14 @@ def signal_markov(yes_token: str, yes_p: float, n_states: int = 10,
     - Simulate 5,000 price paths forward N days
     - P(final state >= 50¢) = Markov-implied YES probability
 
-    Calibration adjustments applied (from 72.1M trade data):
-    - Longshot bias: prices < 10¢ overestimate by ~57% → scale down
-    - Prices > 90¢ underestimate by ~3% → scale up slightly
+    Calibration adjustments (from backtest, n=16 resolved markets):
+    - Raw Markov < 10¢ resolves YES 27% of the time → scale UP 2.5x
+    - Raw Markov < 25¢ scale up 1.4x (mean-reversion bias correction)
+    - IC=0.03 (reduced from 0.09 post-backtest: directionally correct 69%
+      but Brier 28% worse due to overconfident catastrophic failures)
+    - Works best for: trending-NO markets, strong momentum
+    - Fails for: event-driven YES outcomes (ceasefire signed, deal done)
+    - The news velocity signal (S4) should override Markov when HOT
 
     IC ≈ 0.09 (estimated from Markov model backtests on prediction markets)
     This signal is ORTHOGONAL to all other signals because:
@@ -564,19 +569,22 @@ def signal_markov(yes_token: str, yes_p: float, n_states: int = 10,
         mid_state = n_states // 2
         p_yes_raw = sum(1 for s in final_states if s >= mid_state) / n_sims
 
-        # Step 5: Calibration — apply longshot bias correction
-        # From 72.1M trade study: below 10¢ YES wins only 43% as often as expected
+        # Step 5: Calibration — backtest-derived corrections (n=16 markets)
+        # NOTE: The 72M longshot bias applies to TAKER prices, NOT Markov outputs.
+        # Backtest shows Markov < 10¢ resolves YES 27% of the time (6.7x too low).
+        # Root cause: mean-reversion bias pushes simulations to 0¢ for drifting markets.
+        # Correction: scale UP low Markov probabilities to avoid overconfident NO calls.
         if p_yes_raw < 0.10:
-            p_yes_calibrated = p_yes_raw * 0.43 / 0.10 * p_yes_raw + p_yes_raw * (1 - 0.43/0.10)
-            p_yes_calibrated = p_yes_raw * 0.60  # conservative: 40% discount
-        elif p_yes_raw < 0.30:
-            # Mild overestimation in 10-30¢ range
-            p_yes_calibrated = p_yes_raw * 0.88
+            # Markov is severely overconfident toward NO — scale up
+            p_yes_calibrated = p_yes_raw * 2.5  # bring toward 25¢ range
+        elif p_yes_raw < 0.25:
+            # Mild upward correction
+            p_yes_calibrated = p_yes_raw * 1.4
         elif p_yes_raw > 0.90:
-            # Slight underestimation at high prices
-            p_yes_calibrated = min(0.99, p_yes_raw * 1.03)
+            # High Markov predictions are well-calibrated (+0.06 bias only)
+            p_yes_calibrated = min(0.99, p_yes_raw)
         else:
-            p_yes_calibrated = p_yes_raw
+            p_yes_calibrated = p_yes_raw  # 25-90¢ range is well-calibrated
 
         p_yes_calibrated = max(0.01, min(0.99, p_yes_calibrated))
 
