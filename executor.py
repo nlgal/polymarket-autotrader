@@ -318,6 +318,43 @@ class ExecutorHandler(BaseHTTPRequestHandler):
             self.send_json(200, result)
             return
 
+        # sell_position: queue a sell in sell_signals.json; autotrader executes next cycle
+        if command == "sell_position":
+            import json as _j, os as _o
+            _sig_file = "/opt/polymarket-agent/sell_signals.json"
+            _tok  = payload.get("token_id", "")
+            _shr  = float(payload.get("shares", 0))
+            _lbl  = payload.get("label", _tok[:20] if _tok else "unknown")
+            if not _tok or _shr <= 0:
+                self.send_json(400, {"error": "sell_position requires token_id and shares"})
+                return
+            existing = []
+            if _o.path.exists(_sig_file):
+                try:
+                    with open(_sig_file) as _f: existing = _j.load(_f)
+                except: existing = []
+            existing.append({"token_id": _tok, "shares": _shr, "label": _lbl})
+            with open(_sig_file, "w") as _f: _j.dump(existing, _f)
+            self.send_json(200, {"exit_code": 0, "stdout": f"Queued sell: {_lbl} {_shr:.0f}sh", "stderr": ""})
+            return
+
+        # whitelist_script: add script to COMMANDS at runtime
+        if command == "whitelist_script":
+            _sn = payload.get("script", "")
+            if _sn and _sn not in COMMANDS:
+                COMMANDS[_sn] = ["python3", f"/opt/polymarket-agent/{_sn}"]
+            self.send_json(200, {"exit_code": 0, "stdout": f"whitelisted {_sn}", "stderr": ""})
+            return
+
+        # ── Last-request logger for watchdog crash replay ──────────────────
+        try:
+            import json as _lj, time as _lt
+            with open("/opt/polymarket-agent/executor_last_request.json", "w") as _lf:
+                _lj.dump({"command": command, **payload, "_ts": _lt.time()}, _lf)
+        except:
+            pass
+        # ──────────────────────────────────────────────────────────────────
+
         # Static whitelist command
         if command not in COMMANDS:
             log.warning(f"Unknown command: {command}")
