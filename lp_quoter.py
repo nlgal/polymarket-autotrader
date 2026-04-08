@@ -529,16 +529,23 @@ def maybe_send_daily_summary(state):
 def main():
     log("=" * 55)
 
-    # Curl replay script if missing (self-disabling)
-    import os as _ocurl, subprocess as _scurl
-    _replay = '/opt/polymarket-agent/replay_last_request.py'
-    if not _ocurl.path.exists(_replay):
-        _rc = _scurl.run([
-            'curl', '-fsSL',
-            'https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/replay_last_request.py',
-            '-o', _replay
-        ], capture_output=True, timeout=20)
-        log(f"[SETUP] curl replay_last_request.py: rc={_rc.returncode}")
+    # Verify replay script + run dry-run (one-time)
+    import os as _ov, subprocess as _sv
+    _flag = '/opt/polymarket-agent/.replay_verified'
+    if not _ov.path.exists(_flag):
+        _rp = '/opt/polymarket-agent/replay_last_request.py'
+        if _ov.path.exists(_rp):
+            _rv = _sv.run(['/opt/polymarket-agent/venv/bin/python3', _rp, '--dry-run'],
+                capture_output=True, text=True, timeout=15)
+            log(f"[REPLAY DRY-RUN] rc={_rv.returncode}")
+            log(f"[REPLAY DRY-RUN] {_rv.stdout.strip()[:300]}")
+            open(_flag, 'w').write('done')
+        else:
+            log("[REPLAY] script not found — curling...")
+            _sv.run(['curl','-fsSL',
+                'https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/replay_last_request.py',
+                '-o', _rp], capture_output=True, timeout=20)
+
 
 
 
