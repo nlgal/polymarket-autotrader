@@ -17,7 +17,14 @@ Runs on server via executor. Uses same .env as autotrader.
 import os, sys, re, json, math, time, datetime, requests
 sys.path.insert(0, '/opt/polymarket-agent')
 from dotenv import load_dotenv
-from signal_engine import run_signal_engine
+try:
+    from signal_engine import run_signal_engine
+    _SIGNAL_ENGINE_AVAILABLE = True
+except ImportError:
+    _SIGNAL_ENGINE_AVAILABLE = False
+    def run_signal_engine(*args, **kwargs):
+        return {"signal_summary": "", "kelly_size": 0, "combined_prob": kwargs.get("yes_p", 0.5),
+                "kelly": {"reason": "signal_engine not installed"}, "label": "PASS", "ir": 0}
 load_dotenv('/opt/polymarket-agent/.env')
 
 # ── Hormuz / Iran Conflict Proxy Signal ───────────────────────────────────────
