@@ -104,6 +104,100 @@ def fetch_hormuz_proxy() -> dict:
     }
 
 
+
+# ── Price Velocity Signal ─────────────────────────────────────────────────────
+# Detects fast-moving markets that need immediate re-scoring.
+# Rule 3 from quant framework: "60%→75% in 2h = new info; 75% for 3 weeks = consensus."
+#
+# Thresholds (tuned for Polymarket geopolitical markets):
+#   VELOCITY_HOT:  |Δp| > 12% in 1h  → "breaking news repricing" — force rescore + upgrade to bull/bear
+#   VELOCITY_WARM: |Δp| > 6%  in 1h  → "notable move" — bypass scan cache, rescore fresh
+#   VELOCITY_COOL: |Δp| > 4%  in 4h  → "slow drift" — log only, rescore if cache expired
+#
+# Apr15 YES example: 32% → 94% in 4h = +62% → HOT signal, would have triggered at first 8% move
+
+VELOCITY_HOT_1H  = 0.12   # 12% in 1h → force full bull/bear debate
+VELOCITY_WARM_1H = 0.06   # 6%  in 1h → bypass cache, rescore
+VELOCITY_COOL_4H = 0.04   # 4%  in 4h → log, rescore if cache stale
+
+def fetch_price_velocity(token_id: str) -> dict:
+    """
+    Fetch recent price history for a token and compute velocity metrics.
+    Returns dict with:
+      - delta_1h: float  (signed price change over last 1h)
+      - delta_4h: float  (signed price change over last 4h)
+      - abs_1h:   float  (absolute 1h change)
+      - abs_4h:   float  (absolute 4h change)
+      - tier:     str    ("HOT" | "WARM" | "COOL" | "FLAT")
+      - direction: str   ("UP" | "DOWN" | "FLAT")
+      - label:    str    (human-readable summary)
+      - current_p: float
+    """
+    _empty = {"delta_1h": 0, "delta_4h": 0, "abs_1h": 0, "abs_4h": 0,
+               "tier": "FLAT", "direction": "FLAT", "label": "", "current_p": 0}
+    if not token_id:
+        return _empty
+    try:
+        r = requests.get(
+            f"https://clob.polymarket.com/prices-history?market={token_id}&interval=max&fidelity=60",
+            timeout=6
+        )
+        if not r.ok:
+            return _empty
+        history = r.json().get("history", [])
+        if len(history) < 5:
+            return _empty
+
+        now_ts   = history[-1]["t"]
+        now_p    = history[-1]["p"]
+
+        def price_at_offset(offset_secs):
+            target_ts = now_ts - offset_secs
+            for h in reversed(history):
+                if h["t"] <= target_ts:
+                    return h["p"]
+            return history[0]["p"]
+
+        p_1h_ago = price_at_offset(3600)
+        p_4h_ago = price_at_offset(14400)
+
+        delta_1h = now_p - p_1h_ago
+        delta_4h = now_p - p_4h_ago
+        abs_1h   = abs(delta_1h)
+        abs_4h   = abs(delta_4h)
+
+        if abs_1h >= VELOCITY_HOT_1H:
+            tier = "HOT"
+        elif abs_1h >= VELOCITY_WARM_1H:
+            tier = "WARM"
+        elif abs_4h >= VELOCITY_COOL_4H:
+            tier = "COOL"
+        else:
+            tier = "FLAT"
+
+        direction = "UP" if delta_1h > 0.01 else ("DOWN" if delta_1h < -0.01 else "FLAT")
+
+        if tier != "FLAT":
+            label = (
+                f"[VELOCITY {tier}] {direction} {abs_1h*100:.1f}% in 1h "
+                f"({p_1h_ago:.3f}→{now_p:.3f}) | 4h: {delta_4h*100:+.1f}%"
+            )
+        else:
+            label = ""
+
+        return {
+            "delta_1h":  round(delta_1h, 4),
+            "delta_4h":  round(delta_4h, 4),
+            "abs_1h":    round(abs_1h, 4),
+            "abs_4h":    round(abs_4h, 4),
+            "tier":      tier,
+            "direction": direction,
+            "label":     label,
+            "current_p": round(now_p, 4),
+        }
+    except Exception as _e:
+        return _empty
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 # Load scanner config (tunable params + blacklists)
@@ -1199,14 +1293,37 @@ def main():
         if uw_sig:
             log(f"  [UW] {q[:40]}: tags={uw_tags[:3]} vol=${uw_sig.get('smart_volume',0):,.0f}")
         
+        # ── Price Velocity Check — bypass cache for fast-moving markets ────────
+        _vel_token = (mkt.get("tokens") or [{}])[0].get("token_id", "") if mkt.get("tokens") else ""
+        if not _vel_token:
+            # Try clobTokenIds
+            try:
+                _vel_tokens = json.loads(mkt.get("clobTokenIds","[]") or "[]")
+                _vel_token = _vel_tokens[0] if _vel_tokens else ""
+            except:
+                _vel_token = ""
+        _vel = fetch_price_velocity(_vel_token) if _vel_token else {"tier": "FLAT", "label": ""}
+
+        if _vel["tier"] in ("HOT", "WARM"):
+            log(f"  {_vel['label']}", Fore.YELLOW if _vel['tier'] == 'WARM' else Fore.RED)
+            # Force cache bypass — this market needs fresh eyes
+            _cached_score = None
+        elif _vel["tier"] == "COOL":
+            log(f"  {_vel['label']}")
+            _cached_score = _scan_cache_get(mkt)  # still use cache if fresh
+        else:
+            _cached_score = _scan_cache_get(mkt)
+
         # ── OPT-1: Scan score cache — skip re-scoring if price unchanged ────
-        _cached_score = _scan_cache_get(mkt)
         if _cached_score is not None:
             action, edge, reasoning = _cached_score
             log(f"  [SCAN-CACHE] {q[:50]} — reusing {action} edge={edge:.2f}")
         else:
             # Get news
             snippets = fetch_news_snippets(q)
+            # Prepend velocity signal to snippets so Claude sees it prominently
+            if _vel["tier"] in ("HOT", "WARM") and _vel["label"]:
+                snippets = f"MARKET VELOCITY ALERT: {_vel['label']}\n"                            f"This market is moving fast — weight recency heavily.\n\n" + snippets
 
             # ── OPT-2: Fast-reject gate — 1 cheap Haiku call before bull/bear ──
             # If there's clearly no edge, bail before spending 3 calls on debate.
@@ -1236,12 +1353,18 @@ def main():
 
             if not _skip_to_pass:
                 # Tiered scoring:
-                #   >= $50 + UW signal or gate passed: full bull/bear debate (3 Claude calls)
-                #   >= $30: consensus vote (Claude + Perplexity in parallel)
+                #   HOT velocity OR >= $50 + UW: full bull/bear debate (3 Claude calls)
+                #   WARM velocity OR >= $30: consensus vote (Claude + Perplexity in parallel)
                 #   <  $30: single Claude call
-                if projected_size >= BULL_BEAR_THRESHOLD:
+                _force_bull_bear  = _vel["tier"] == "HOT"
+                _force_consensus  = _vel["tier"] == "WARM"
+                if _force_bull_bear or projected_size >= BULL_BEAR_THRESHOLD:
+                    if _force_bull_bear:
+                        log(f"  [VELOCITY] HOT market → forcing full bull/bear debate", Fore.RED)
                     action, edge, reasoning = bull_bear_debate(q, yes_p, mkt["description"], snippets, uw_summary_text)
-                elif projected_size >= CONSENSUS_THRESHOLD and PERPLEXITY_KEY:
+                elif (_force_consensus or projected_size >= CONSENSUS_THRESHOLD) and PERPLEXITY_KEY:
+                    if _force_consensus:
+                        log(f"  [VELOCITY] WARM market → forcing consensus vote", Fore.YELLOW)
                     action, edge, reasoning, _votes = consensus_vote(q, yes_p, mkt["description"], snippets, uw_summary_text)
                 else:
                     action, edge, reasoning = score_with_claude(q, yes_p, mkt["description"], snippets, uw_summary_text)
