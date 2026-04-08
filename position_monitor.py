@@ -384,7 +384,7 @@ def main():
 def patch_executor():
     """Patch executor.py to add sell_position and whitelist_script commands."""
     import os, subprocess, re, time
-    FLAG = "/opt/polymarket-agent/.executor_patched_v2"
+    FLAG = "/opt/polymarket-agent/.executor_patched_v3"
     if os.path.exists(FLAG):
         return
 
@@ -421,6 +421,12 @@ def patch_executor():
     if not m:
         log("  [PATCH] Cannot find else/unknown block — showing tail of dispatch:")
         log(code[code.rfind("elif cmd"):code.rfind("elif cmd")+400])
+        # Also try alternate patterns
+        for alt in [r"else:\n.*?unknown", r"unknown command"]:
+            m2 = re.search(alt, code)
+            if m2: log(f"  [PATCH] alt match at {m2.start()}: {repr(code[m2.start()-50:m2.end()+50])}")
+        # Print last 1500 chars of executor
+        log(f"  [PATCH] executor tail: {repr(code[-1500:])}")
         return
 
     ind = m.group(1)  # indentation of the else block
