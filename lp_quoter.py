@@ -529,23 +529,21 @@ def maybe_send_daily_summary(state):
 def main():
     log("=" * 55)
 
-    # READ EXECUTOR DUMP
+    # READ EXECUTOR DIRECTLY
     import os as _eos_d
-    _dump = '/opt/polymarket-agent/executor_dump.txt'
-    if _eos_d.path.exists(_dump):
-        with open(_dump) as _df:
-            _dc = _df.read()
-        log(f"EXECUTOR_LEN:{len(_dc)}")
-        # Print dispatch section (look for command routing)
-        for _kw in ['command', 'cmd', 'ALLOWED', 'run_script', 'deploy_autotrader']:
-            _idx = _dc.find(_kw)
-            if _idx != -1:
-                log(f"KW_{_kw}_AT:{_idx}:{_dc[max(0,_idx-30):_idx+200]}")
-                break
-        # Print last 2000 chars
-        log(f"EXEC_TAIL:{_dc[-2000:]}")
+    _exe = '/opt/polymarket-agent/executor.py'
+    if _eos_d.path.exists(_exe):
+        with open(_exe) as _ef:
+            _ec = _ef.read()
+        log(f"EXEC_LEN:{len(_ec)}")
+        # Find command routing keyword
+        for _kw in ['command', '"cmd"', "cmd =", 'payload.get', 'deploy_autotrader', 'run_script']:
+            _i = _ec.find(_kw)
+            if _i != -1:
+                log(f"KW_{_kw}:{repr(_ec[max(0,_i-20):_i+150])}")
+        log(f"TAIL:{repr(_ec[-1500:])}")
     else:
-        log("NO_DUMP_FILE")
+        log(f"EXEC_NOT_FOUND at {_exe}")
 
 
     log("LP QUOTER v1.0 — " + datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
