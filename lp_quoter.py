@@ -268,6 +268,32 @@ def track_fills(open_order_ids, state):
     for mkt in LP_MARKETS:
         if not mkt["enabled"]:
             continue
+
+        # Skip markets past their end date or already resolved
+        import datetime as _dt, requests as _rqlp
+        _end = mkt.get("end_date", "")
+        if _end:
+            try:
+                _end_dt = _dt.datetime.fromisoformat(_end.replace("Z",""))
+                if _dt.datetime.utcnow() > _end_dt + _dt.timedelta(hours=1):
+                    log(f"  [LP] SKIP — past end date: {mkt['label']}")
+                    mkt["enabled"] = False
+                    continue
+            except:
+                pass
+        else:
+            # No end_date set — check market status via API
+            try:
+                _cid = mkt.get("condition_id","")
+                if _cid:
+                    _mr = _rqlp.get(f"https://gamma-api.polymarket.com/markets/{_cid}", timeout=5)
+                    if _mr.ok and _mr.json().get("closed"):
+                        log(f"  [LP] SKIP — market closed: {mkt['label']}")
+                        mkt["enabled"] = False
+                        continue
+            except:
+                pass
+
         ms = state.get(mkt["label"], {})
         for side, key, price_key in [
             ("YES", "yes_order_id", "yes_quoted_price"),
