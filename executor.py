@@ -358,6 +358,35 @@ class ExecutorHandler(BaseHTTPRequestHandler):
         # Static whitelist command
         if command not in COMMANDS:
             log.warning(f"Unknown command: {command}")
+            if command == "sell_position":
+                import json as _j, os as _o
+                _sf = "/opt/polymarket-agent/sell_signals.json"
+                _tok = payload.get("token_id",""); _shr = float(payload.get("shares",0))
+                _lbl = payload.get("label", _tok[:20])
+                if not _tok or _shr <= 0:
+                    self.send_json(400, {"error":"sell_position requires token_id and shares"}); return
+                _ex = []
+                if _o.path.exists(_sf):
+                    try:
+                        with open(_sf) as _f: _ex = _j.load(_f)
+                    except: pass
+                _ex.append({"token_id":_tok,"shares":_shr,"label":_lbl})
+                with open(_sf,"w") as _f: _j.dump(_ex,_f)
+                self.send_json(200, {"exit_code":0,"stdout":f"Queued sell: {_lbl} {_shr:.0f}sh","stderr":""}); return
+            if command == "whitelist_script":
+                _sn = payload.get("script","")
+                if _sn and _sn not in COMMANDS: COMMANDS[_sn] = ["python3", f"/opt/polymarket-agent/{_sn}"]
+                self.send_json(200, {"exit_code":0,"stdout":f"whitelisted {_sn}","stderr":""}); return
+            if command == "sync_scripts":
+                import subprocess as _ss
+                _base = "https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main"
+                _dest = "/opt/polymarket-agent"
+                _files = payload.get("files",["signal_engine.py","very_hot_forward_test.py","autotrader.py","opportunity_scanner.py","lp_quoter.py","position_monitor.py","whale_monitor.py","near_resolution_scanner.py"])
+                _res = {}
+                for _fn in _files:
+                    _r = _ss.run(["curl","-fsSL",f"{_base}/{_fn}","-o",f"{_dest}/{_fn}"],capture_output=True,timeout=30)
+                    _res[_fn] = "ok" if _r.returncode==0 else "fail"
+                self.send_json(200, {"exit_code":0,"stdout":str(_res),"stderr":""}); return
             self.send_json(400, {"error": f"unknown command: {command}"})
             return
 

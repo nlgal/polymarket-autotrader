@@ -554,19 +554,5 @@ def maybe_send_daily_summary(state):
 def main():
     log("=" * 55)
 
-    # Install missing modules (one-time)
-    import os as _oim, subprocess as _sim
-    _mflag = '/opt/polymarket-agent/.modules_v4'
-    if not _oim.path.exists(_mflag):
-        _base = 'https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main'
-        _dest = '/opt/polymarket-agent'
-        _ok = True
-        for _fn in ['signal_engine.py', 'very_hot_forward_test.py']:
-            _p = f'{_dest}/{_fn}'
-            _r = _sim.run(['curl','-fsSL',f'{_base}/{_fn}','-o',_p], capture_output=True, timeout=30)
-            _sz = _oim.path.getsize(_p) if _oim.path.exists(_p) else 0
-            log(f'  [INSTALL] {_fn}: rc={_r.returncode} size={_sz}b')
-            if _r.returncode != 0 or _sz < 1000: _ok = False
-        if _ok: open(_mflag,'w').write('done'); log('  [INSTALL] ✅ All modules installed')
 
 
