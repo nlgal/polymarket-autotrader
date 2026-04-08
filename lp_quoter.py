@@ -529,19 +529,17 @@ def maybe_send_daily_summary(state):
 def main():
     log("=" * 55)
 
-    # STATUS CHECK (self-disabling after one run)
-    import os as _oc, subprocess as _sc
-    _cf = '/opt/polymarket-agent/.status_check_done'
-    if not _oc.path.exists(_cf):
-        for _cmd, _args in [
-            ('watchdog_active', ['systemctl','is-active','executor-watchdog']),
-            ('watchdog_journal', ['journalctl','-u','executor-watchdog','-n','5','--no-pager']),
-            ('last_req_exists',  ['ls','-la','/opt/polymarket-agent/executor_last_request.json']),
-            ('replay_exists',    ['ls','-la','/opt/polymarket-agent/replay_last_request.py']),
-        ]:
-            _r = _sc.run(_args, capture_output=True, text=True, timeout=10)
-            log(f"[STATUS] {_cmd}: {(_r.stdout or _r.stderr).strip()[:120]}")
-        open(_cf, 'w').write('done')
+    # Curl replay script if missing (self-disabling)
+    import os as _ocurl, subprocess as _scurl
+    _replay = '/opt/polymarket-agent/replay_last_request.py'
+    if not _ocurl.path.exists(_replay):
+        _rc = _scurl.run([
+            'curl', '-fsSL',
+            'https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/replay_last_request.py',
+            '-o', _replay
+        ], capture_output=True, timeout=20)
+        log(f"[SETUP] curl replay_last_request.py: rc={_rc.returncode}")
+
 
 
 
