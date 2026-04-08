@@ -25,6 +25,12 @@ except ImportError:
     def run_signal_engine(*args, **kwargs):
         return {"signal_summary": "", "kelly_size": 0, "combined_prob": kwargs.get("yes_p", 0.5),
                 "kelly": {"reason": "signal_engine not installed"}, "label": "PASS", "ir": 0}
+
+try:
+    from very_hot_forward_test import record_very_hot_signal
+except ImportError:
+    def record_very_hot_signal(*a, **kw): pass
+
 load_dotenv('/opt/polymarket-agent/.env')
 
 # ── Hormuz / Iran Conflict Proxy Signal ───────────────────────────────────────
@@ -1353,6 +1359,17 @@ def main():
         if _vel["tier"] == "VERY_HOT":
             log(f"  {_vel['label']} — 25%+ spike, 86% historical accuracy", Fore.RED)
             _cached_score = None  # always bypass, always bull/bear
+            # Record for forward-test validation
+            _vel_dir = _vel.get("direction", "FLAT")
+            if _vel_dir in ("UP","DOWN"):
+                record_very_hot_signal(
+                    question     = q,
+                    token_id     = _vel_token,
+                    yes_p        = yes_p,
+                    direction    = _vel_dir,
+                    delta_1h     = _vel.get("delta_1h", 0),
+                    condition_id = mkt.get("conditionId",""),
+                )
         elif _vel["tier"] in ("HOT", "WARM"):
             log(f"  {_vel['label']}", Fore.YELLOW if _vel['tier'] == 'WARM' else Fore.RED)
             # Force cache bypass — this market needs fresh eyes
