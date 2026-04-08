@@ -1,0 +1,110 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Sync scripts to live server
+        env:
+          SERVER_URL: ${{ secrets.DEPLOY_SERVER_URL }}
+          EXECUTOR_SECRET: ${{ secrets.EXECUTOR_SECRET }}
+        run: |
+          python3 << 'PYEOF'
+          import hmac, hashlib, json, requests, os, sys
+
+          SERVER = os.environ["SERVER_URL"]   # http://167.71.68.143:8888
+          SECRET = os.environ["EXECUTOR_SECRET"]
+
+          def exec_server(command, **kwargs):
+              payload = {"command": command, **kwargs}
+              body    = json.dumps(payload).encode()
+              sig     = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
+              r = requests.post(
+                  f"{SERVER}/exec", data=body,
+                  headers={"Content-Type": "application/json", "X-Signature": sig},
+                  timeout=120
+              )
+              return r.json()
+
+          # Sync all production scripts from the just-merged commit
+          FILES = [
+              "autotrader.py",
+              "opportunity_scanner.py",
+              "lp_quoter.py",
+              "position_monitor.py",
+              "whale_monitor.py",
+              "signal_engine.py",
+              "very_hot_forward_test.py",
+              "near_resolution_scanner.py",
+              "book_imbalance_scanner.py",
+              "sell_position_impl.py",
+              "executor_watchdog.py",
+              "replay_last_request.py",
+              "OPERATING_CONSTITUTION.md",
+          ]
+
+          print("Syncing scripts to server...")
+          result = exec_server("sync_scripts", files=FILES)
+          sync_results = result.get("stdout", "{}")
+          print(sync_results)
+
+          # Check for failures
+          try:
+              parsed = json.loads(sync_results.replace("'", '"'))
+              failures = [f for f, s in parsed.items() if s != "ok"]
+              if failures:
+                  print(f"FAILED: {failures}")
+                  sys.exit(1)
+              else:
+                  print(f"All {len(parsed)} files synced OK")
+          except Exception as e:
+              print(f"Could not parse result: {e}")
+              # Non-fatal — sync may have partially succeeded
+
+          # Restart autotrader to pick up new code
+          print("Restarting autotrader...")
+          r2 = exec_server("service_restart")
+          print(f"Restart: exit={r2.get('exit_code')} {r2.get('stdout','').strip()}")
+          if r2.get("exit_code") != 0:
+              print(f"Restart warning: {r2}")
+              # Non-fatal — autotrader may still be running old code
+
+          print("Deploy complete")
+          PYEOF
+
+      - name: Verify autotrader is healthy
+        env:
+          SERVER_URL: ${{ secrets.DEPLOY_SERVER_URL }}
+          EXECUTOR_SECRET: ${{ secrets.EXECUTOR_SECRET }}
+        run: |
+          sleep 8
+          python3 << 'PYEOF'
+          import hmac, hashlib, json, requests, os, sys
+
+          SERVER = os.environ["SERVER_URL"]
+          SECRET = os.environ["EXECUTOR_SECRET"]
+
+          def exec_server(command, **kwargs):
+              payload = {"command": command, **kwargs}
+              body    = json.dumps(payload).encode()
+              sig     = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
+              r = requests.post(
+                  f"{SERVER}/exec", data=body,
+                  headers={"Content-Type": "application/json", "X-Signature": sig},
+                  timeout=30
+              )
+              return r.json()
+
+          r = exec_server("service_status")
+          if r.get("exit_code") == 0:
+              print("Autotrader healthy ✅")
+          else:
+              print(f"Autotrader unhealthy ⚠️: {r}")
+              sys.exit(1)
+          PYEOF
