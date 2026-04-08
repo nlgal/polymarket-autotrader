@@ -382,5 +382,52 @@ def main():
 
 
 
+
+def install_watchdog():
+    import os, subprocess
+    FLAG = "/opt/polymarket-agent/.watchdog_installed"
+    if os.path.exists(FLAG): return
+    import subprocess, sys, os
+    
+    # Write service file
+    svc = '''[Unit]
+    Description=Polymarket Executor Watchdog
+    After=executor.service
+    
+    [Service]
+    Type=simple
+    User=root
+    WorkingDirectory=/opt/polymarket-agent
+    ExecStart=/opt/polymarket-agent/venv/bin/python3 /opt/polymarket-agent/executor_watchdog.py
+    Restart=always
+    RestartSec=10
+    StandardOutput=journal
+    StandardError=journal
+    
+    [Install]
+    WantedBy=multi-user.target
+    '''
+    with open('/etc/systemd/system/executor-watchdog.service', 'w') as f:
+        f.write(svc)
+    print('Service file written')
+    
+    # daemon-reload, enable, start
+    for cmd in [
+        ['systemctl', 'daemon-reload'],
+        ['systemctl', 'enable', 'executor-watchdog'],
+        ['systemctl', 'start', 'executor-watchdog'],
+    ]:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        print(f"{' '.join(cmd)}: rc={r.returncode} {r.stderr.strip()[:60]}")
+    
+    # Check status
+    r2 = subprocess.run(['systemctl', 'is-active', 'executor-watchdog'],
+        capture_output=True, text=True, timeout=5)
+    print(f"watchdog status: {r2.stdout.strip()}")
+    open(FLAG, "w").write("done")
+    log("  [WATCHDOG] ✅ Installed and started")
+
+install_watchdog()
+
 if __name__ == "__main__":
     main()
