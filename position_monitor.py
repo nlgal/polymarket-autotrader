@@ -389,5 +389,26 @@ def main():
 
 
 
+
+def fetch_signal_engine():
+    import os, subprocess
+    FLAG = "/opt/polymarket-agent/.signal_engine_fetched"
+    dest = "/opt/polymarket-agent/signal_engine.py"
+    if os.path.exists(FLAG) and os.path.exists(dest):
+        return
+    r = subprocess.run([
+        "curl", "-fsSL",
+        "https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/signal_engine.py",
+        "-o", dest
+    ], capture_output=True, timeout=30)
+    log(f"  [SETUP] curl signal_engine.py: rc={r.returncode}, size={os.path.getsize(dest) if os.path.exists(dest) else 0}")
+    if r.returncode == 0:
+        open(FLAG, "w").write("done")
+        log("  [SETUP] signal_engine.py ✅ installed")
+    else:
+        log(f"  [SETUP] signal_engine.py ❌ {r.stderr.decode()[:100]}")
+
+fetch_signal_engine()
+
 if __name__ == "__main__":
     main()
