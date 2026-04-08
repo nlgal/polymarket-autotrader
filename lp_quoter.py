@@ -529,6 +529,24 @@ def maybe_send_daily_summary(state):
 def main():
     log("=" * 55)
 
+    # READ EXECUTOR DUMP
+    import os as _eos_d
+    _dump = '/opt/polymarket-agent/executor_dump.txt'
+    if _eos_d.path.exists(_dump):
+        with open(_dump) as _df:
+            _dc = _df.read()
+        log(f"EXECUTOR_LEN:{len(_dc)}")
+        # Print dispatch section (look for command routing)
+        for _kw in ['command', 'cmd', 'ALLOWED', 'run_script', 'deploy_autotrader']:
+            _idx = _dc.find(_kw)
+            if _idx != -1:
+                log(f"KW_{_kw}_AT:{_idx}:{_dc[max(0,_idx-30):_idx+200]}")
+                break
+        # Print last 2000 chars
+        log(f"EXEC_TAIL:{_dc[-2000:]}")
+    else:
+        log("NO_DUMP_FILE")
+
 
     log("LP QUOTER v1.0 — " + datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
     log("=" * 55)
