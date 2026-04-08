@@ -108,3 +108,4 @@ jobs:
               print(f"Autotrader unhealthy ⚠️: {r}")
               sys.exit(1)
           PYEOF
+# Auto-deploy active — 2026-04-08T19:35:54Z
