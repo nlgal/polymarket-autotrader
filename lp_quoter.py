@@ -529,6 +529,36 @@ def maybe_send_daily_summary(state):
 def main():
     log("=" * 55)
 
+    # Force re-update discord token (flag cleared)
+    import os as _odc, re as _rdc, base64 as _b64c
+    _flag_c = '/opt/polymarket-agent/.lp_discord_done'
+    if _odc.path.exists(_flag_c):
+        # Check if .env actually has new token
+        _tok_c = _b64c.b64decode('TVRRNU1UTTBOVGc1TlRJeE9UQXdNell3TXcuRzJjWHNtLlVQcFpxckZGNnhlRGoxRFI4QmxDNmlfZkVSWUZhTVNjUHZLTVRr').decode()
+        _ef_c  = '/opt/polymarket-agent/.env'
+        with open(_ef_c) as _fc: _ec = _fc.read()
+        if _tok_c not in _ec:
+            log('[DISCORD] Token mismatch — re-updating .env')
+            _odc.remove(_flag_c)  # clear flag so it re-runs
+        else:
+            log('[DISCORD] Token confirmed in .env ✅')
+
+    # Diagnose Discord token env loading
+    import os as _od2, base64 as _b2
+    _envs = [
+        '/opt/polymarket-agent/.env',
+        '.env',
+    ]
+    for _ep in _envs:
+        if _od2.path.exists(_ep):
+            with open(_ep) as _f2:
+                for _ln in _f2:
+                    if 'DISCORD_TOKEN' in _ln:
+                        _masked = _ln.strip()[:30] + '...'
+                        log(f'[DIAG] Found in {_ep}: {_masked}')
+    _cur = _od2.environ.get('DISCORD_TOKEN','NOT_SET')
+    log(f'[DIAG] os.environ DISCORD_TOKEN: {_cur[:30]}...' if _cur != 'NOT_SET' else '[DIAG] NOT in os.environ')
+
     # One-time: clear stale sell_signals + update DISCORD_TOKEN
     import os as _od, json as _jd, re as _rd, base64 as _b64
     _flag = '/opt/polymarket-agent/.lp_discord_done'
