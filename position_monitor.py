@@ -384,7 +384,7 @@ def main():
 def patch_executor():
     """Patch executor.py to add sell_position and whitelist_script commands."""
     import os, subprocess, re, time
-    FLAG = "/opt/polymarket-agent/.executor_patched_v4"
+    FLAG = "/opt/polymarket-agent/.executor_patched_v5"
     if os.path.exists(FLAG):
         return
 
@@ -413,7 +413,9 @@ def patch_executor():
         return
 
     # Print key structural sections
-    log(f"  [PATCH] executor tail (last 1200): {repr(code[-1200:])}")
+    # Print in chunks
+    for _ci in range(0, min(len(code), 3000), 200):
+        log(f"  [PATCH] code[{len(code)-3000+_ci}:{len(code)-3000+_ci+200}]: {repr(code[len(code)-3000+_ci:len(code)-3000+_ci+200])}")
 
     # Find insertion point: the else/unknown-command block
     m = re.search(r"([ \t]+)else:[^\n]*\n[^\n]*unknown command", code)
