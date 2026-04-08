@@ -529,13 +529,6 @@ def maybe_send_daily_summary(state):
 def main():
     log("=" * 55)
 
-            log(f"[REPLAY DRY-RUN] {_rv.stdout.strip()[:300]}")
-            open(_flag, 'w').write('done')
-        else:
-            log("[REPLAY] script not found — curling...")
-            _sv.run(['curl','-fsSL',
-                'https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/replay_last_request.py',
-                '-o', _rp], capture_output=True, timeout=20)
 
 
 
