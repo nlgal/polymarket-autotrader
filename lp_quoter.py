@@ -529,15 +529,6 @@ def maybe_send_daily_summary(state):
 def main():
     log("=" * 55)
 
-    # Verify replay script + run dry-run (one-time)
-    import os as _ov, subprocess as _sv
-    _flag = '/opt/polymarket-agent/.replay_verified'
-    if not _ov.path.exists(_flag):
-        _rp = '/opt/polymarket-agent/replay_last_request.py'
-        if _ov.path.exists(_rp):
-            _rv = _sv.run(['/opt/polymarket-agent/venv/bin/python3', _rp, '--dry-run'],
-                capture_output=True, text=True, timeout=15)
-            log(f"[REPLAY DRY-RUN] rc={_rv.returncode}")
             log(f"[REPLAY DRY-RUN] {_rv.stdout.strip()[:300]}")
             open(_flag, 'w').write('done')
         else:
