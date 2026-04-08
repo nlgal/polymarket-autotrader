@@ -25,7 +25,6 @@ Safety:
 import os, sys, json, time, datetime, requests
 sys.path.insert(0, '/opt/polymarket-agent')
 from dotenv import load_dotenv
-load_dotenv('/opt/polymarket-agent/.env')
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -529,17 +528,12 @@ def maybe_send_daily_summary(state):
 def main():
     log("=" * 55)
 
-            _odc.remove(_flag_c)  # clear flag so it re-runs
         else:
-            log('[DISCORD] Token confirmed in .env ✅')
 
-    _cur = _od2.environ.get('DISCORD_TOKEN','NOT_SET')
-    log(f'[DIAG] os.environ DISCORD_TOKEN: {_cur[:30]}...' if _cur != 'NOT_SET' else '[DIAG] NOT in os.environ')
 
         # Update Discord token
         try:
             _tok = _b64.b64decode('TVRRNU1UTTBOVGc1TlRJeE9UQXdNell3TXcuRzJjWHNtLlVQcFpxckZGNnhlRGoxRFI4QmxDNmlfZkVSWUZhTVNjUHZLTVRr').decode()
-            _ef  = '/opt/polymarket-agent/.env'
             with open(_ef) as _f: _ec = _f.read()
             if 'DISCORD_TOKEN=' in _ec:
                 _ec = _rd.sub(r'DISCORD_TOKEN=.*', f'DISCORD_TOKEN={_tok}', _ec)
