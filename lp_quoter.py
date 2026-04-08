@@ -529,6 +529,30 @@ def maybe_send_daily_summary(state):
 def main():
     log("=" * 55)
 
+    # One-time: clear stale sell_signals + update DISCORD_TOKEN
+    import os as _od, json as _jd, re as _rd, base64 as _b64
+    _flag = '/opt/polymarket-agent/.lp_discord_done'
+    if not _od.path.exists(_flag):
+        # Clear sell_signals.json
+        _sf = '/opt/polymarket-agent/sell_signals.json'
+        if _od.path.exists(_sf):
+            _od.remove(_sf)
+            log('[SETUP] Cleared stale sell_signals.json')
+        # Update Discord token
+        try:
+            _tok = _b64.b64decode('TVRRNU1UTTBOVGc1TlRJeE9UQXdNell3TXcuRzJjWHNtLlVQcFpxckZGNnhlRGoxRFI4QmxDNmlfZkVSWUZhTVNjUHZLTVRr').decode()
+            _ef  = '/opt/polymarket-agent/.env'
+            with open(_ef) as _f: _ec = _f.read()
+            if 'DISCORD_TOKEN=' in _ec:
+                _ec = _rd.sub(r'DISCORD_TOKEN=.*', f'DISCORD_TOKEN={_tok}', _ec)
+            else:
+                _ec = _ec.rstrip() + f'\nDISCORD_TOKEN={_tok}\n'
+            with open(_ef, 'w') as _f: _f.write(_ec)
+            open(_flag, 'w').write('done')
+            log('[SETUP] DISCORD_TOKEN updated in .env ✅')
+        except Exception as _de:
+            log(f'[SETUP] Discord token error: {_de}')
+
 
 
 
