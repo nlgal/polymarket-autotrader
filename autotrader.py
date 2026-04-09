@@ -1147,11 +1147,50 @@ def update_control_plane(state, equity_now):
         peak = equity_now
         checkpoint = equity_now
 
-    drawdown   = 1.0 - (equity_now / peak) if peak > 0 else 0.0
-    daily_pnl  = equity_now - sod
+    # ── Sports position exemption ─────────────────────────────────────────────
+    # Same-day sports positions priced at 99¢+ are resolved but pending oracle.
+    # Their value is real cash-equivalent — they should NOT be counted as losses.
+    # Without this, Suns/Thunder winning at 99¢ then dropping to 0¢ post-oracle
+    # looks like an 88% drawdown and triggers HARD_PAUSE spuriously.
+    _sports_pending_value = 0.0
+    try:
+        import requests as _rq_sports
+        _pos_r = _rq_sports.get(
+            f"https://data-api.polymarket.com/positions?user={FUNDER_ADDRESS}&limit=50",
+            timeout=8
+        )
+        if _pos_r.ok:
+            _SPORTS_KW = ["nba","nfl","nhl","mlb","ufc","suns","thunder","clippers",
+                           "lakers","celtics","warriors","nuggets","cavaliers","hawks",
+                           "mavericks","knicks","timberwolves","rockets","pacers","nets",
+                           "premier league","champions league","tennis","f1","ufc","golf"]
+            for _p in _pos_r.json():
+                _cv  = float(_p.get("currentValue", 0))
+                _sh  = float(_p.get("size", 0))
+                _ttl = _p.get("title","").lower()
+                if _cv < 1 or _sh < 1:
+                    continue
+                _mid = _cv / _sh
+                # Near-resolved sports position (99¢+) pending oracle
+                if _mid > 0.97 and any(_kw in _ttl for _kw in _SPORTS_KW):
+                    _cost = _sh * float(_p.get("avgPrice", _mid))
+                    _sports_pending_value += _cost  # add back cost basis
+                    log(f"  [SPORTS-EXEMPT] {_p.get('title','')[:45]}: "
+                        f"${_cv:.0f} pending oracle — exempt from drawdown calc")
+    except Exception as _se:
+        pass
+
+    # Adjust equity_now upward by sports pending value to avoid false hard-pause
+    equity_adjusted = equity_now + _sports_pending_value
+    if _sports_pending_value > 0:
+        log(f"  [SPORTS-EXEMPT] equity_now ${equity_now:.2f} → adjusted ${equity_adjusted:.2f} "
+            f"(+${_sports_pending_value:.2f} pending oracle)")
+
+    drawdown   = 1.0 - (equity_adjusted / peak) if peak > 0 else 0.0
+    daily_pnl  = equity_adjusted - sod
     daily_pnl_pct = daily_pnl / sod if sod > 0 else 0.0
 
-    log(f"Equity: ${equity_now:.2f} | Peak: ${peak:.2f} | DD: {drawdown:.1%} | Daily P&L: ${daily_pnl:+.2f} ({daily_pnl_pct:+.1%})")
+    log(f"Equity: ${equity_now:.2f} (adj ${equity_adjusted:.2f}) | Peak: ${peak:.2f} | DD: {drawdown:.1%} | Daily P&L: ${daily_pnl:+.2f} ({daily_pnl_pct:+.1%})")
 
     allow_new_trades = True
     prev_mode = state["mode"]
