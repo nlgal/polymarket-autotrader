@@ -3185,8 +3185,13 @@ def run_cycle(client, state):
                         _mid    = float(_mid_r.json().get("mid", 0))
                         _tick_r = _rq_ss.get(f"https://clob.polymarket.com/tick-size?token_id={_tok}", timeout=8)
                         _tick   = float(_tick_r.json().get("minimum_tick_size", 0.01))
-                        _sp     = round((_mid // _tick) * _tick, 6)
+                        # Floor to nearest valid tick — use round() not // to avoid float precision issues
+                        _n_ticks = int(_mid / _tick)
+                        _sp     = round(_n_ticks * _tick, 6)
                         _sp     = max(_tick, _sp)
+                        # For near-resolved markets (mid > 0.95), use mid directly
+                        if _mid > 0.95: _sp = round((_n_ticks + 1) * _tick, 6)
+                        _sp     = min(0.99, max(_tick, _sp))
                         log(f"  [SELL-SIG] {_lbl}: {_shr:.0f}sh @ {_sp:.4f} (mid={_mid:.4f})")
                         from py_clob_client.order_builder.constants import SELL as _SELL_CONST
                         from py_clob_client.clob_types import OrderArgs as _OAS, OrderType as _OTS, PartialCreateOrderOptions as _PCOS
