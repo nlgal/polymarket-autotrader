@@ -47,6 +47,17 @@ TG_TOKEN    = os.environ.get('TELEGRAM_TOKEN', '')
 TG_CHAT     = os.environ.get('TELEGRAM_CHAT_ID', '')
 
 # ── Strategy config ────────────────────────────────────────────────────
+# DK_MODE: when True, the scanner ONLY manages existing ladder positions.
+# New entries are ONLY placed when a pick is written to DK_PICKS_FILE.
+# Set DK_MODE=True permanently — manual picks via dk_picks.json only.
+#
+# To signal a new DK pick:
+#   Write to /opt/polymarket-agent/dk_picks.json:
+#   [{"team": "Phoenix Suns", "market_hint": "mavericks vs suns", "size": 200}]
+#   The trader finds the Polymarket market, buys, clears the file.
+DK_MODE       = True
+DK_PICKS_FILE = '/opt/polymarket-agent/dk_picks.json'
+
 MAX_PER_TEAM      = 75      # Max total $ deployed per team
 MAX_SPORTS_TOTAL  = 200     # Max total sports exposure today
 MAX_YES_PRICE     = 0.82    # Don't enter if already >82¢
@@ -78,6 +89,34 @@ def tg(msg):
 def log(msg):
     ts = datetime.datetime.utcnow().strftime('%H:%M:%S')
     print(f'[{ts}] {msg}')
+
+def load_dk_picks():
+    """Read pending DK picks from dk_picks.json. Returns list of picks, clears file after read."""
+    if not os.path.exists(DK_PICKS_FILE):
+        return []
+    try:
+        with open(DK_PICKS_FILE) as f:
+            picks = json.load(f)
+        os.remove(DK_PICKS_FILE)  # consume the file
+        log(f'  [DK] Loaded {len(picks)} pick(s) from dk_picks.json')
+        return picks if isinstance(picks, list) else [picks]
+    except Exception as e:
+        log(f'  [DK] Error reading dk_picks.json: {e}')
+        return []
+
+def find_market_for_pick(pick, markets):
+    """Find the Polymarket market matching a DK pick by team name or hint."""
+    team_hint  = pick.get('team', '').lower()
+    mkt_hint   = pick.get('market_hint', '').lower()
+    for team_name, mkt in markets.items():
+        name_lower = team_name.lower()
+        slug_lower = mkt.get('slug', '').lower()
+        if team_hint and (team_hint in name_lower or name_lower in team_hint):
+            return team_name, mkt
+        if mkt_hint and (mkt_hint in slug_lower or any(
+                word in slug_lower for word in mkt_hint.split() if len(word) > 3)):
+            return team_name, mkt
+    return None, None
 
 def load_state():
     try:
@@ -611,79 +650,37 @@ def main():
     # ── Phase 1: Check ladder fills & rebalance sells ──────────────
     check_and_rebalance(client, state)
 
-    # ── Phase 2: Look for new entries ─────────────────────────────
-    if cash >= MIN_USDC and state['daily_spend'] < MAX_SPORTS_TOTAL:
-        log('Fetching tournament markets...')
-        markets = get_polymarket_tournament_markets()
-        log(f'Found {len(markets)} markets')
-
-        # NCAA
-        log('Checking NCAA games...')
-        ncaa_games   = get_live_ncaa_scores()
-        ncaa_markets = {k: v for k, v in markets.items() if v['sport'] == 'NCAA'}
-
-        for game in ncaa_games:
-            state_g = game['state']
-            winner  = game.get('winner')
-
-            if state_g == 'post' and winner:
-                for team_name, mkt in ncaa_markets.items():
-                    if winner.lower() in team_name.lower() or team_name.lower() in winner.lower():
-                        pos_key = f'ncaa_{team_name}_{today}'
-                        if pos_key in state.get('positions', {}):
-                            continue
-                        ok, size, reason = score_entry(mkt, 'post_win')
-                        if ok:
-                            mkt['_team'] = team_name
-                            enter_position(client, mkt, pos_key, size, reason, state)
-
-            elif state_g == 'in':
-                lead    = abs(game['home_score'] - game['away_score'])
-                leading = game['home_team'] if game['home_score'] > game['away_score'] else game['away_team']
-                detail  = game.get('detail', '')
-                period  = 2 if '2nd' in detail else 1
-
-                for team_name, mkt in ncaa_markets.items():
-                    if leading.lower() in team_name.lower() or team_name.lower() in leading.lower():
-                        pos_key = f'ncaa_live_{team_name}_{today}'
-                        if pos_key in state.get('positions', {}):
-                            continue
-                        ok, size, reason = score_entry(mkt, 'in', lead=lead, period=period)
-                        if ok:
-                            mkt['_team'] = team_name
-                            enter_position(client, mkt, pos_key, size, reason, state)
-
-        # NBA
-        log('Checking NBA games...')
-        nba_games   = get_live_nba_scores()
-        nba_markets = {k: v for k, v in markets.items() if v['sport'] == 'NBA'}
-        nba_top10   = {
-            'Oklahoma City Thunder': 1, 'San Antonio Spurs': 2, 'Detroit Pistons': 3,
-            'Boston Celtics': 4,       'New York Knicks': 5,    'Los Angeles Lakers': 6,
-            'Denver Nuggets': 7,       'Cleveland Cavaliers': 8,'Minnesota Timberwolves': 9,
-            'Houston Rockets': 10,
-        }
-
-        for game in nba_games:
-            if game['state'] != 'in':
-                continue
-            lead    = game['lead']
-            period  = game.get('period', 0)
-            leading = game['leading_team']
-            if nba_top10.get(leading, 99) > 10 or lead < 15 or period < 3:
-                continue
-
-            for team_name, mkt in nba_markets.items():
-                if leading.lower() in team_name.lower() or team_name.lower() in leading.lower():
-                    pos_key = f'nba_live_{team_name}_{today}'
-                    if pos_key in state.get('positions', {}):
-                        continue
-                    ok, size, reason = score_entry(mkt, 'in', lead=lead, period=period)
-                    if ok:
-                        mkt['_team'] = team_name
-                        enter_position(client, mkt, pos_key, size, reason, state)
+    # ── Phase 2: DK Discord pick entries only (DK_MODE=True) ────────
+    if DK_MODE:
+        dk_picks = load_dk_picks()
+        if not dk_picks:
+            log('[DK MODE] No pending picks — skipping new entries')
+        else:
+            log(f'[DK MODE] Processing {len(dk_picks)} DK pick(s)...')
+            markets = get_polymarket_tournament_markets()
+            for pick in dk_picks:
+                team_name, mkt = find_market_for_pick(pick, markets)
+                if not mkt:
+                    log(f'  [DK] No market found for pick: {pick}')
+                    tg(f'⚠️ DK pick not found on Polymarket: {pick.get("team",pick)}')
+                    continue
+                size    = min(pick.get('size', MAX_PER_TEAM), MAX_PER_TEAM)
+                pos_key = f'dk_{team_name}_{today}'
+                if pos_key in state.get('positions', {}):
+                    log(f'  [DK] Already in {team_name} today — skip')
+                    continue
+                mkt['_team'] = team_name
+                reason = f'DK Discord pick: {pick.get("note", team_name)}'
+                enter_position(client, mkt, pos_key, size, reason, state)
     else:
-        log('Skipping new entries (budget or cash exhausted)')
+        # Legacy: independent scanning (disabled — set DK_MODE=True above)
+        log('[SCAN MODE] Independent scanning active (DK_MODE=False)')
+        if cash >= MIN_USDC and state['daily_spend'] < MAX_SPORTS_TOTAL:
+            log('Fetching tournament markets...')
+            markets = get_polymarket_tournament_markets()
+            log(f'Found {len(markets)} markets — scanning disabled, use DK_MODE')
+        else:
+            log('Skipping new entries (budget or cash exhausted)')
 
     save_state(state)
     log(f'=== Done | Sports spend today: ${state["daily_spend"]:.2f} ===')
