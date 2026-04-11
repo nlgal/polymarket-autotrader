@@ -191,10 +191,18 @@ def days_to_expiry(end_date_str):
     except Exception:
         return None
 
+# ── Permanently excluded contradiction markets ────────────────────────────────
+# These are intentional mirror bets, not contradictions. Never alert.
+CONTRADICTION_EXCLUDED_TITLES = [
+    "prime minister of hungary",
+    "will the next prime minister of hungary",
+]
+
 def is_contradiction(positions):
     """
     Returns list of LOSING contradiction pairs (YES+NO same market, total payout < total cost).
     Strangle (profitable either way) is NOT a contradiction.
+    Hungary PM markets are permanently excluded (mirror bets, not contradictions).
     """
     from collections import defaultdict
     by_condition = defaultdict(list)
@@ -211,6 +219,11 @@ def is_contradiction(positions):
         yes_p = next((p for p in group if p.get("outcome","").upper() == "YES"), None)
         no_p  = next((p for p in group if p.get("outcome","").upper() == "NO"), None)
         if not yes_p or not no_p:
+            continue
+
+        # Skip permanently excluded markets
+        title_lower = yes_p.get("title","").lower()
+        if any(excl in title_lower for excl in CONTRADICTION_EXCLUDED_TITLES):
             continue
         
         yes_shares = float(yes_p.get("size", 0))
