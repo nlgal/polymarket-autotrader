@@ -187,6 +187,11 @@ ALLOWED_SCRIPTS = {
     "patch_auto_redeem.py",
     "clear_redeem_cache.py",
     "diag_auto_redeem.py",
+    "clear_signals.py",
+    "very_hot_forward_test.py",
+    "near_resolution_scanner.py",
+    "negative_risk_scanner.py",
+    "book_imbalance_scanner.py",
 }
 
 
