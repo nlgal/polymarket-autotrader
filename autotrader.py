@@ -1070,32 +1070,41 @@ def get_client():
 
 def get_equity(client):
     """
-    Equity = total portfolio value (USDC cash + all open position values).
-    Uses Polymarket data-api /value endpoint which returns the true portfolio value.
-    Falls back to USDC cash only if that fails.
+    Equity = positions market value + CLOB free cash.
+    The Polymarket data-api /value endpoint returns ONLY position mark-to-market,
+    NOT CLOB free cash. We must add CLOB balance separately for true equity.
     """
+    positions_value = 0.0
+    clob_cash = 0.0
     try:
         import requests as _req
-        # Use Polymarket data API for true total value (includes position mark-to-market)
+        # Positions value from data API
         _r = _req.get(f"https://data-api.polymarket.com/value?user={FUNDER}", timeout=8)
         if _r.status_code == 200:
             _data = _r.json()
             if isinstance(_data, list) and _data:
-                return float(_data[0].get("value", 0))
+                positions_value = float(_data[0].get("value", 0))
             elif isinstance(_data, dict):
-                return float(_data.get("value", 0))
+                positions_value = float(_data.get("value", 0))
     except Exception as e:
-        log(f"Equity value API failed: {e} — falling back to USDC balance", Fore.YELLOW)
-    # Fallback: USDC cash only
+        log(f"Equity value API failed: {e}", Fore.YELLOW)
     try:
+        # CLOB free cash (USDC available for trading)
         from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
         balance_info = client.get_balance_allowance(
             params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2)
         )
-        return float(balance_info.get("balance", 0)) / 1e6
+        clob_cash = float(balance_info.get("balance", 0)) / 1e6
     except Exception as e:
-        log(f"Equity check failed: {e}", Fore.YELLOW)
-        return None
+        log(f"CLOB balance check failed: {e}", Fore.YELLOW)
+    total = positions_value + clob_cash
+    if total > 0:
+        if clob_cash > 1.0:
+            log(f"  Equity: positions=\${positions_value:.2f} + CLOB_cash=\${clob_cash:.2f} = \${total:.2f}", Fore.CYAN)
+        return total
+    # If both failed, return None
+    log(f"Equity check failed: positions={positions_value}, clob={clob_cash}", Fore.YELLOW)
+    return None
 
 
 def get_portfolio_stats(client):
@@ -3246,13 +3255,34 @@ def run_cycle(client, state):
                         # For near-resolved markets (mid > 0.95), use mid directly
                         if _mid > 0.95: _sp = round((_n_ticks + 1) * _tick, 6)
                         _sp     = min(0.99, max(_tick, _sp))
+                        if _mid <= 0.01:
+                            log(f"  [SELL-SIG] {_lbl}: mid={_mid:.4f} too low — position worthless, marking done", Fore.YELLOW)
+                            _completed.append(_sig)
+                            continue
                         log(f"  [SELL-SIG] {_lbl}: {_shr:.0f}sh @ {_sp:.4f} (mid={_mid:.4f})")
                         from py_clob_client.order_builder.constants import SELL as _SELL_CONST
-                        from py_clob_client.clob_types import OrderArgs as _OAS, OrderType as _OTS, PartialCreateOrderOptions as _PCOS
-                        _ord = client.create_order(
-                            _OAS(token_id=_tok, price=_sp, size=_shr, side=_SELL_CONST),
-                            _PCOS(tick_size=_tick, neg_risk=False)
-                        )
+                        from py_clob_client.clob_types import OrderArgs as _OAS, OrderType as _OTS
+                        # Try with PartialCreateOrderOptions first, fall back to simple create_order
+                        _ord = None
+                        try:
+                            from py_clob_client.clob_types import PartialCreateOrderOptions as _PCOS
+                            _ord = client.create_order(
+                                _OAS(token_id=_tok, price=_sp, size=_shr, side=_SELL_CONST),
+                                _PCOS(tick_size=_tick, neg_risk=False)
+                            )
+                        except Exception:
+                            # neg_risk param not supported for this market — try without
+                            try:
+                                from py_clob_client.clob_types import PartialCreateOrderOptions as _PCOS2
+                                _ord = client.create_order(
+                                    _OAS(token_id=_tok, price=_sp, size=_shr, side=_SELL_CONST),
+                                    _PCOS2(tick_size=_tick)
+                                )
+                            except Exception:
+                                # Last resort: plain create_order without options
+                                _ord = client.create_order(
+                                    _OAS(token_id=_tok, price=_sp, size=_shr, side=_SELL_CONST)
+                                )
                         _resp = client.post_order(_ord, _OTS.GTC)
                         if _resp and _resp.get("success"):
                             log(f"  [SELL-SIG] {_lbl}: ✅ SOLD at {_sp:.4f}", Fore.GREEN)
@@ -3260,7 +3290,8 @@ def run_cycle(client, state):
                         else:
                             log(f"  [SELL-SIG] {_lbl}: ❌ {_resp}", Fore.RED)
                     except Exception as _se:
-                        log(f"  [SELL-SIG] {_lbl}: error {_se}", Fore.RED)
+                        import traceback as _tb
+                        log(f"  [SELL-SIG] {_lbl}: error {_se} | {_tb.format_exc()[-200:]}", Fore.RED)
                 # Remove completed signals
                 remaining = [s for s in _signals if s not in _completed]
                 if remaining:
