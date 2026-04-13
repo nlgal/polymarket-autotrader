@@ -718,7 +718,12 @@ def is_sports_market(question: str) -> bool:
 #   "halved_until": float,    # unix timestamp — 0 = not halved
 #   "per_sport": {},          # {sport_name: exposure_usdc}
 #   "exposure_total": float,  # total open sports exposure
+#   "daily_spend": float,     # USDC spent on sports today (hard cap: $300/day)
 # }
+
+# Hard daily spend cap for sports — autotrader cannot spend more than this per day
+# regardless of equity or edge. DK picks via live_sports_trader bypass this.
+SPORTS_DAILY_SPEND_HARD_CAP = 300.0
 
 def get_sports_state(state: dict) -> dict:
     """Get (or initialize) sports sub-state from main state dict."""
@@ -733,6 +738,7 @@ def get_sports_state(state: dict) -> dict:
             "halved_until": 0.0,
             "per_sport": {},
             "exposure_total": 0.0,
+            "daily_spend": 0.0,
         }
     return state["sports"]
 
@@ -748,10 +754,11 @@ def check_sports_eligibility(market: dict, state: dict, equity: float) -> tuple:
     ss = get_sports_state(state)
     now = _t.time()
 
-    # Reset daily PnL if new day
+    # Reset daily PnL and daily spend if new day
     today = _dt.utcnow().date().isoformat()
     if ss.get("daily_date") != today:
         ss["daily_pnl"] = 0.0
+        ss["daily_spend"] = 0.0
         ss["daily_date"] = today
 
     # Reset weekly PnL if new week (Monday)
@@ -819,6 +826,14 @@ def check_sports_eligibility(market: dict, state: dict, equity: float) -> tuple:
     max_sports_total = equity * 0.10
     if ss.get("exposure_total", 0) >= max_sports_total:
         return False, f"Sports total exposure ${ss['exposure_total']:.0f} >= 10% of equity (${max_sports_total:.0f})"
+
+    # [S18] Hard daily spend cap — autotrader cannot spend > $300/day on sports
+    # This protects against runaway sports buys from scoreboard scanning.
+    # DK picks via live_sports_trader.py are NOT subject to this cap.
+    daily_spend = ss.get("daily_spend", 0.0)
+    if daily_spend >= SPORTS_DAILY_SPEND_HARD_CAP:
+        return False, f"Sports daily spend cap reached (${daily_spend:.0f} >= ${SPORTS_DAILY_SPEND_HARD_CAP:.0f}) — use DK picks for more"
+
 
     return True, "ok"
 
@@ -3673,6 +3688,11 @@ def run_cycle(client, state):
         if receipt:
             stats["deployed"] += size
             trades_placed += 1
+            # Track sports daily spend [S18]
+            if is_sports_market(m.get("question", "") + " " + m.get("title", "")):
+                _ss = get_sports_state(state)
+                _ss["daily_spend"] = _ss.get("daily_spend", 0.0) + size
+                log(f"  [SPORTS] Daily spend: ${_ss['daily_spend']:.0f} / ${SPORTS_DAILY_SPEND_HARD_CAP:.0f}", Fore.MAGENTA)
 
         if stats["deployed"] >= open_budget or stats["open_orders"] + trades_placed >= max_orders:
             log(f"Mode budget reached during cycle.", Fore.YELLOW)
