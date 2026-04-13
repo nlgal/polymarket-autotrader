@@ -192,6 +192,7 @@ ALLOWED_SCRIPTS = {
     "near_resolution_scanner.py",
     "negative_risk_scanner.py",
     "book_imbalance_scanner.py",
+    "check_balance.py",
 }
 
 
