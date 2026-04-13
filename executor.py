@@ -193,6 +193,8 @@ ALLOWED_SCRIPTS = {
     "negative_risk_scanner.py",
     "book_imbalance_scanner.py",
     "check_balance.py",
+    "reset_paused.py",
+    "read_signals.py",
 }
 
 
