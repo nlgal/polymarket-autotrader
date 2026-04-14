@@ -314,8 +314,10 @@ class ExecutorHandler(BaseHTTPRequestHandler):
                 return
             script_path = os.path.join(AGENT_DIR, script)
             # Always re-download from GitHub to get latest version
+            import time as _tt
+            _cache_bust = int(_tt.time())
             dl = run_command(
-                f"curl -sf https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/{script} "
+                f"curl -sfL 'https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/{script}?t={_cache_bust}' "
                 f"-o {script_path}"
             )
             if dl["exit_code"] != 0:
