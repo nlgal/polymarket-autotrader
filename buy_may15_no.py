@@ -31,27 +31,38 @@ price  = round((n + 1) * tick, 6)
 price  = min(price, 0.99)
 shares = round(USDC_AMOUNT / price, 2)
 
-print(f"BUY Iran May15 NO: {shares:.2f}sh @ {price:.3f} = ${shares * price:.2f}")
+print(f"BUY Iran May15 NO: {shares:.2f}sh @ {price:.3f} = ${shares*price:.2f}")
 print(f"Market mid: {mid:.3f} | tick: {tick}")
 
-try:
-    order = client.create_order(
-        OrderArgs(token_id=TOKEN, price=price, size=shares, side=BUY),
-        PartialCreateOrderOptions(tick_size=tick, neg_risk=False)
-    )
-    resp = client.post_order(order, OrderType.GTC)
-    if resp and resp.get("success"):
-        print(f"SUCCESS: {resp.get('orderID','')}")
-    else:
-        print(f"FAILED: {resp}")
-        # Retry without neg_risk
-        order2 = client.create_order(
-            OrderArgs(token_id=TOKEN, price=price, size=shares, side=BUY),
-            PartialCreateOrderOptions(tick_size=tick)
-        )
-        resp2 = client.post_order(order2, OrderType.GTC)
-        print(f"Retry result: {resp2}")
-except Exception as e:
-    import traceback
-    print(f"Error: {e}")
-    traceback.print_exc()
+order = None
+for kwargs in [
+    {"tick_size": tick, "neg_risk": False},
+    {"tick_size": tick},
+    {},
+]:
+    try:
+        if kwargs:
+            order = client.create_order(
+                OrderArgs(token_id=TOKEN, price=price, size=shares, side=BUY),
+                PartialCreateOrderOptions(**kwargs)
+            )
+        else:
+            order = client.create_order(
+                OrderArgs(token_id=TOKEN, price=price, size=shares, side=BUY)
+            )
+        break
+    except Exception as e:
+        print(f"  create_order kwargs={kwargs} failed: {e}")
+        continue
+
+if order is None:
+    print("All create_order attempts failed")
+    sys.exit(1)
+
+resp = client.post_order(order, OrderType.GTC)
+if resp and resp.get("success"):
+    print(f"SUCCESS: {resp.get('orderID','')}")
+    print(f"Bought {shares:.2f}sh of Iran May15 NO @ {price:.3f} = ${shares*price:.2f}")
+else:
+    print(f"FAILED: {resp}")
+    sys.exit(1)
