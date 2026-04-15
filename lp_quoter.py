@@ -8,9 +8,18 @@ daily USDC LP incentives from Polymarket's liquidity rewards program.
 Runs every 15 minutes via cron. Places YES buy + NO buy within the
 reward spread zone, cancels and re-quotes when midpoint drifts.
 
-Two-sided quoting earns 3× vs single-sided in the reward formula:
-  score = min(yes_score, no_score) × scaling_factor
-  where score = ((max_spread - distance) / max_spread)² × shares
+LP Reward Formula (MuddyRC, April 2026):
+  base_score(v,s) = ((v - s) / v)² × shares   [quadratic decay — keep spreads TIGHT]
+  final_score = Qmin = max(min(Q1, Q2), max(Q1, Q2) / c)   where c=3
+
+  Key insight: two-sided is 3× better ONLY if both sides are perfectly balanced.
+  If one side fills more than the other, final_score = min(Q1, Q2) — the weaker side.
+  If fully one-sided: score = Q_one / c (penalized by 3×).
+  Strategy: go 50/50 on neutral markets, 100% one-sided on directional markets.
+  AVOID the middle (70/30 etc) — it's the worst of both worlds.
+
+  Our implementation: conflict check blocks opposing side when we hold >100sh
+  directional position → effectively one-sided LP on those markets (correct).
 
 Safety:
   - kill_lp.json: drop this file on server to cancel all orders immediately
@@ -509,12 +518,16 @@ def run_market(client, mkt, state, open_orders, usdc_avail):
 
     placed = sum(1 for x in [yes_oid, no_oid] if x)
     if placed == 2:
-        # Estimate share of pool for Telegram summary
-        est_share = (target / 92000) * 100  # rough, using Apr30 zone depth
-        est_daily = mkt["pool_day"] * (est_share / 100) * 3  # ×3 two-sided
-        log(f"[{label}] ✓ Both sides placed | est ~${est_daily:.2f}/day LP rewards")
+        # 50/50 balanced: both sides placed, full reward score
+        est_share = (target / 92000) * 100
+        est_daily = mkt["pool_day"] * (est_share / 100)  # no multiplier: Qmin = min(Q1,Q2)
+        log(f"[{label}] ✓ Both sides placed (50/50) | est ~${est_daily:.2f}/day LP rewards")
     elif placed == 1:
-        log(f"[{label}] ⚠️  Only {placed}/2 orders placed — partial LP")
+        # One-sided: score = Q_one / c where c=3 (penalty for one-sided)
+        est_share = (target / 92000) * 100
+        est_daily = mkt["pool_day"] * (est_share / 100) / 3  # penalized 3× per formula
+        log(f"[{label}] → One-sided order (directional conflict) | est ~${est_daily:.2f}/day LP rewards")
+        log(f"[{label}]   Note: one-sided beats unbalanced two-sided (MuddyRC, Apr 2026)")
     else:
         log(f"[{label}] ✗ No orders placed")
 
