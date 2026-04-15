@@ -67,7 +67,8 @@ COMMANDS = {
         f"systemctl restart polymarket && echo OK"
     ),
     "deploy_executor": (
-        f"curl -s https://raw.githubusercontent.com/nlgal/polymarket-autotrader/main/executor.py "
+        f"curl -sfL -H 'Accept: application/vnd.github.v3.raw' "
+        f"https://api.github.com/repos/nlgal/polymarket-autotrader/contents/executor.py "
         f"-o {AGENT_DIR}/executor.py && "
         f"systemctl restart executor && echo OK"
     ),
