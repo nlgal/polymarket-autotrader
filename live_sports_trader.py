@@ -287,15 +287,37 @@ def check_and_rebalance(client, state):
 
     log(f'Checking {len(positions)} tracked position(s) for ladder fills / rebalance...')
 
+    import time as _t
+    now = _t.time()
+
     for pos_key, pos in list(positions.items()):
         yes_token    = pos.get('yes_token', '')
         ladder_orders = pos.get('ladder_orders', [])
         if not yes_token or not ladder_orders:
+            # No token or no orders — stale entry, remove
+            log(f'  {pos_key}: no token/orders — removing stale entry')
+            del positions[pos_key]
             continue
+
+        # Auto-purge positions older than 72h with no unfilled ladder orders
+        # (game is long over, oracle may not have fired, position is dead weight)
+        created_ts = pos.get('created_ts', 0)
+        if created_ts and (now - created_ts) > 72 * 3600:
+            has_open = any(o.get('status') == 'open' for o in ladder_orders)
+            if not has_open:
+                log(f'  {pos_key}: >72h old with no open orders — auto-purging stale state')
+                del positions[pos_key]
+                continue
 
         # Get current market price
         best_ask = get_best_ask(yes_token)
         if best_ask is None:
+            continue
+
+        # ── Resolved/stale market cleanup (price at 99c+ or 1c-) ──────
+        if best_ask > 0.98 or best_ask < 0.02:
+            log(f'  {pos_key}: market resolved (ask={best_ask:.3f}) — removing from state')
+            del positions[pos_key]
             continue
 
         # ── Eliminated team cleanup ──────────────────────────────────
@@ -319,12 +341,22 @@ def check_and_rebalance(client, state):
         for lo in ladder_orders:
             if lo['status'] == 'open' and lo.get('order_id'):
                 if lo['order_id'] not in open_order_ids:
-                    # Order is gone from open orders → filled (or cancelled)
-                    # Assume filled if market price is at or below the bid price + buffer
-                    if best_ask <= lo['price'] * 1.05:
+                    # Order gone from open orders — only treat as FILLED if:
+                    # 1. The order_id was explicitly confirmed filled (not just missing), OR
+                    # 2. Market price is BELOW the ladder price (i.e. price dropped to our bid)
+                    # The old check `best_ask <= lo['price'] * 1.05` was too loose:
+                    # it triggered during live games whenever price drifted near the ladder.
+                    # Correct check: price must be AT or BELOW our bid price (filled means
+                    # someone sold to us at our price or lower).
+                    if best_ask <= lo['price']:
                         lo['status'] = 'filled'
                         new_fills = True
-                        log(f'  Ladder fill detected: {lo["shares"]:.1f}sh @ {lo["price"]:.3f}')
+                        log(f'  Ladder fill confirmed: {lo["shares"]:.1f}sh @ {lo["price"]:.3f} (ask={best_ask:.3f})')
+                    else:
+                        # Order disappeared (expired/cancelled) but price is above our bid
+                        # → treat as cancelled, not filled
+                        lo['status'] = 'cancelled'
+                        log(f'  Ladder order gone but price above bid ({best_ask:.3f} > {lo["price"]:.3f}) → cancelled')
 
         if not new_fills:
             log(f'  {pos_key}: no new ladder fills (YES={best_ask:.3f})')
