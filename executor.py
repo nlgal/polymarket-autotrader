@@ -196,6 +196,7 @@ ALLOWED_SCRIPTS = {
     "reset_paused.py",
     "read_signals.py",
     "buy_may15_no.py",
+    "buy_iran_inv.py",
     "dump_whales.py",
     "read_watchlist.py",
     "purge_sports_state.py",
