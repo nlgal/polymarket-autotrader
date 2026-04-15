@@ -198,6 +198,7 @@ ALLOWED_SCRIPTS = {
     "buy_may15_no.py",
     "dump_whales.py",
     "read_watchlist.py",
+    "purge_sports_state.py",
 }
 
 
