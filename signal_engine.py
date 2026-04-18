@@ -976,6 +976,71 @@ def run_signal_engine(
     }
 
 
+# ── Bellman Exit Threshold (Phosphen, April 2026) ───────────────────────────
+# Based on optimal stopping / Snell envelope framework.
+# The exit threshold for a position should DECAY toward 0 as expiry approaches.
+# A flat reservation price leaks money: continuation value changes every day.
+#
+# Formula: threshold(t) = fair_value × (1 - exp(-k × days_remaining / T))
+# where k controls decay speed (k≈3 gives ~5% decay at T/3, ~63% at T).
+#
+# For multi-clip exits (d-stop problem): Kobylanski et al. 2009
+#   Clip 1: exit at threshold × 0.85  (capture early drift)
+#   Clip 2: exit at threshold × 1.00  (fair value hit)
+#   Clip 3: hold to resolution or threshold × 1.15 (capture upside tail)
+
+def bellman_exit_threshold(
+    fair_value: float,
+    days_remaining: int,
+    total_days: int,
+    k: float = 3.0,
+) -> dict:
+    """
+    Compute the Bellman exit threshold for a YES position.
+
+    Args:
+        fair_value:      Your model's probability estimate (e.g. 0.60)
+        days_remaining:  Calendar days until market resolution
+        total_days:      Total duration of the market in days
+        k:               Decay speed (default 3.0 — aggressive decay near expiry)
+
+    Returns dict with:
+        threshold:    The decayed exit price — sell when market hits this
+        clip_exits:   Three-clip exit prices for scaling out
+        hold_signal:  True if market is below threshold (hold/buy)
+        exit_signal:  True if market is above threshold (sell/reduce)
+        decay_factor: How much of the fair value is preserved today
+    """
+    import math
+    if total_days <= 0:
+        total_days = max(days_remaining, 1)
+    t_frac = days_remaining / total_days
+    # Decay: threshold starts near fair_value when t_frac=1, collapses to 0 at t_frac=0
+    decay = 1.0 - math.exp(-k * t_frac)
+    threshold = fair_value * decay
+    threshold = max(threshold, fair_value * 0.05)  # floor at 5% of fair value
+    threshold = min(threshold, 0.99)
+
+    # Three clips (d-stop): early, fair, tail
+    clip1 = round(min(threshold * 0.85, 0.99), 3)
+    clip2 = round(min(threshold,        0.99), 3)
+    clip3 = round(min(threshold * 1.15, 0.99), 3)
+
+    return {
+        "threshold":    round(threshold, 4),
+        "clip_exits":   [clip1, clip2, clip3],
+        "decay_factor": round(decay, 4),
+        "days_remaining": days_remaining,
+        "fair_value":   fair_value,
+        "hold_signal":  True,   # caller compares market price to threshold
+        "description":  (
+            f"Exit threshold {threshold:.3f} (fair={fair_value:.3f}, "
+            f"{days_remaining}d left, decay={decay:.2f}). "
+            f"Clips: {clip1:.3f} / {clip2:.3f} / {clip3:.3f}"
+        ),
+    }
+
+
 if __name__ == "__main__":
     # Quick smoke test
     import json
