@@ -603,12 +603,38 @@ def get_existing_positions():
     except:
         return set()
 
-def get_candidate_markets():
-    """Pull top liquid markets, filter out obvious non-opportunities."""
+def get_candidate_markets(uw_signals: dict | None = None):
+    """Pull top liquid markets + any UW-flagged markets not in top-volume list.
+
+    UW signals are indexed by CLOB token ID. We fetch the market for each
+    UW-flagged token and add it to candidates even if it's not in the top
+    volume list. This ensures UW signals always get evaluated.
+    """
     r = requests.get(
         "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100"
         "&order=volume24hr&ascending=false", timeout=15)
     markets = r.json()
+
+    # Inject UW-flagged markets that aren't already in the top-volume list
+    if uw_signals:
+        seen_tokens = set()
+        for m in markets:
+            for tok in (m.get("clob_token_ids") or []):
+                seen_tokens.add(tok)
+        uw_missing_tokens = [tok for tok in uw_signals if tok not in seen_tokens]
+        if uw_missing_tokens:
+            log(f"[UW] {len(uw_missing_tokens)} flagged markets not in top-volume list — fetching...")
+            for tok in uw_missing_tokens[:20]:  # cap at 20 extra lookups
+                try:
+                    mkt_r = requests.get(
+                        f"https://gamma-api.polymarket.com/markets?clob_token_ids={tok}"
+                        f"&active=true&closed=false", timeout=8)
+                    if mkt_r.ok:
+                        for m in mkt_r.json():
+                            markets.append(m)
+                            log(f"[UW] Added flagged market: {m.get('question','')[:60]}")
+                except Exception:
+                    pass
     
     candidates = []
     for m in markets:
@@ -1249,13 +1275,15 @@ def main():
     
     # Load UW whale/insider signals
     uw_signals = get_uw_signals()
+    if uw_signals:
+        log(f"[UW] {len(uw_signals)} signals loaded — injecting flagged markets into candidate pool")
     
     # Get existing positions
     existing_conditions = get_existing_positions()
     log(f"Existing positions: {len(existing_conditions)}")
     
     # Get candidates
-    candidates = get_candidate_markets()
+    candidates = get_candidate_markets(uw_signals=uw_signals)
     log(f"Scanning {len(candidates)} candidate markets...")
     
     # Skip markets we're already in
