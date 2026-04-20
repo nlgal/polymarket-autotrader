@@ -83,9 +83,9 @@ jobs:
           SERVER_URL: ${{ secrets.DEPLOY_SERVER_URL }}
           EXECUTOR_SECRET: ${{ secrets.EXECUTOR_SECRET }}
         run: |
-          sleep 8
+          sleep 25
           python3 << 'PYEOF'
-          import hmac, hashlib, json, requests, os, sys
+          import hmac, hashlib, json, requests, os, sys, time
 
           SERVER = os.environ["SERVER_URL"]
           SECRET = os.environ["EXECUTOR_SECRET"]
@@ -101,11 +101,26 @@ jobs:
               )
               return r.json()
 
+          # Retry up to 3 times — executor may still be restarting after deploy_executor
+          for attempt in range(3):
+              try:
+                  r = exec_server("service_status")
+                  status = r.get("stdout", "")
+                  if "active (running)" in status:
+                      print(f"Autotrader healthy ✅ (attempt {attempt+1})")
+                      sys.exit(0)
+                  else:
+                      print(f"Attempt {attempt+1}: not running yet — {status[:80]}")
+              except Exception as e:
+                  print(f"Attempt {attempt+1}: executor unreachable ({e}) — may be restarting")
+              time.sleep(10)
+
+          # Final attempt — fail the workflow if still not healthy
           r = exec_server("service_status")
-          if r.get("exit_code") == 0:
+          if "active (running)" in r.get("stdout", ""):
               print("Autotrader healthy ✅")
           else:
-              print(f"Autotrader unhealthy ⚠️: {r}")
+              print(f"Autotrader unhealthy after retries ⚠️: {r}")
               sys.exit(1)
           PYEOF
 # Auto-deploy active — 2026-04-08T19:35:54Z
