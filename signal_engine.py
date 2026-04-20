@@ -907,6 +907,27 @@ def run_signal_engine(
     s5 = signal_microstructure(yes_token, yes_p)
     s6 = signal_markov(yes_token, yes_p)
 
+    # S7: Whale consensus — reads consensus_cache.json written by whale_consensus.py
+    # Runs every 6h autonomously. Returns 0.0 if cache stale or no alignment.
+    s7 = {"probability": yes_p, "direction": "NEUTRAL", "confidence": 0.0,
+          "ic": 0.12, "label": "S7_whale_consensus", "raw": 0.0}
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from whale_consensus import get_s7_score
+        _s7_side = "YES" if (action_hint == "BUY_YES" or yes_p > 0.5) else "NO"
+        s7_raw = get_s7_score(question, _s7_side)
+        if s7_raw > 0:
+            # Consensus on our side: bullish signal — push probability toward 1.0
+            _s7_prob = yes_p + (1.0 - yes_p) * s7_raw * 0.5 if _s7_side == "YES" else \
+                       yes_p - yes_p * s7_raw * 0.5
+            _s7_prob = max(0.05, min(0.95, _s7_prob))
+            s7 = {"probability": _s7_prob, "direction": f"BULL_{_s7_side}",
+                  "confidence": s7_raw, "ic": 0.12,
+                  "label": f"S7_whale_consensus ({s7_raw:.2f} alignment)", "raw": s7_raw}
+    except Exception:
+        pass  # whale_consensus.py not available or cache missing
+
     signals = {
         "term_structure": s1,
         "insider_flow":   s2,
@@ -914,6 +935,7 @@ def run_signal_engine(
         "news_velocity":  s4,
         "microstructure": s5,
         "markov":         s6,
+        "whale_consensus": s7,
     }
 
     # Combine signals
