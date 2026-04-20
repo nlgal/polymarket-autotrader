@@ -202,6 +202,7 @@ ALLOWED_SCRIPTS = {
     "read_watchlist.py",
     "purge_sports_state.py",
     "whale_consensus.py",
+    "uw_diag.py",
 }
 
 
