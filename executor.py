@@ -205,13 +205,38 @@ ALLOWED_SCRIPTS = {
 }
 
 
+# Replay protection: track seen request hashes within a 5-minute window
+_seen_requests: dict = {}  # {request_hash: timestamp}
+_seen_lock = threading.Lock()
+REPLAY_WINDOW_SECS = 300  # 5 minutes
+
+
 def verify_signature(body_bytes: bytes, sig_header: str) -> bool:
-    """Verify HMAC-SHA256 signature."""
+    """Verify HMAC-SHA256 signature + replay protection.
+    Rejects:
+      - Invalid signatures
+      - Missing secret (fail-closed)
+      - Replayed requests (same body+sig seen within 5 min window)
+    """
     if not SECRET:
         log.error("EXECUTOR_SECRET not set — rejecting all requests")
         return False
     expected = hmac.new(SECRET.encode(), body_bytes, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, sig_header.strip())
+    if not hmac.compare_digest(expected, sig_header.strip()):
+        return False
+    # Replay protection: reject identical request body seen within 5 min
+    req_hash = expected  # signature is a unique fingerprint of body+secret
+    now = time.time()
+    with _seen_lock:
+        # Prune old entries
+        expired = [k for k, t in _seen_requests.items() if now - t > REPLAY_WINDOW_SECS]
+        for k in expired:
+            del _seen_requests[k]
+        if req_hash in _seen_requests:
+            log.warning("Replay attack detected — rejecting duplicate request")
+            return False
+        _seen_requests[req_hash] = now
+    return True
 
 
 def check_rate_limit() -> bool:

@@ -804,11 +804,36 @@ def bull_bear_debate(question, yes_p, description, news_snippets, uw_summary="")
     """
     import concurrent.futures
 
-    uw_note = f"\nUW SIGNAL: {uw_summary}" if uw_summary else ""
-    market_ctx = f"""MARKET: {question}
+    # Sanitize market inputs before injecting into Claude prompt.
+    # Prevents a malicious Polymarket listing from hijacking the prompt.
+    # Rules: strip prompt-escape sequences, cap length, remove code-like patterns.
+    def _sanitize(text: str, max_len: int = 300) -> str:
+        if not isinstance(text, str):
+            return ""
+        # Remove patterns that look like prompt injection attempts
+        import re as _re
+        text = text[:max_len * 2]  # pre-cap before regex work
+        # Strip instruction-override patterns
+        text = _re.sub(
+            r'(?i)(ignore (previous|all|above)|forget (everything|instructions?)|'
+            r'new (instructions?|task|role|prompt)|you are now|act as|'
+            r'disregard|override|system prompt|</?s?ys(tem)?>|\[INST\])',
+            '[REDACTED]', text
+        )
+        # Collapse excessive whitespace / newlines that can confuse prompt boundaries
+        text = _re.sub(r'\n{3,}', '\n\n', text)
+        return text[:max_len].strip()
+
+    _q    = _sanitize(question, 120)
+    _desc = _sanitize(description, 250)
+    _news = _sanitize(news_snippets, 500)
+    _uw   = _sanitize(uw_summary, 150) if uw_summary else ""
+
+    uw_note = f"\nUW SIGNAL: {_uw}" if _uw else ""
+    market_ctx = f"""MARKET: {_q}
 YES PRICE: {yes_p:.2f} ({yes_p*100:.0f}% probability)
-DESCRIPTION: {description[:250]}
-NEWS: {news_snippets[:500]}{uw_note}"""
+DESCRIPTION: {_desc}
+NEWS: {_news}{uw_note}"""
 
     # Step 1 + 2: Bull and Bear argue in parallel
     bull_prompt = f"""You are the BULL analyst at a prediction market trading desk.

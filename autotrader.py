@@ -1039,11 +1039,27 @@ def load_state():
     return dict(DEFAULT_STATE)
 
 def save_state(state):
+    """Atomic state write — crash mid-write cannot corrupt state.json.
+    Writes to a temp file first, then renames atomically (POSIX guarantee).
+    Circuit breakers and protective stops are never lost on crash.
+    """
+    import tempfile
     try:
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f, indent=2)
+        dir_name = os.path.dirname(STATE_FILE)
+        with tempfile.NamedTemporaryFile(
+            mode='w', dir=dir_name, suffix='.tmp', delete=False
+        ) as tmp:
+            json.dump(state, tmp, indent=2)
+            tmp_path = tmp.name
+        os.replace(tmp_path, STATE_FILE)  # atomic on POSIX
     except Exception as e:
         log(f"State save error: {e}", Fore.YELLOW)
+        # Clean up temp file if rename failed
+        try:
+            if 'tmp_path' in dir() and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 # ── CLOB Client ───────────────────────────────────────────────────────────────
