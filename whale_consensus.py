@@ -112,6 +112,10 @@ def scan_consensus(top15):
     """Get positions for all top-15 accounts, find alignment."""
     market_map = defaultdict(lambda: {'YES': [], 'NO': []})
 
+    # Track which wallets we've already counted per market to avoid double-counting
+    # A single account re-entering the same market should count as 1 unique trader.
+    market_account_seen: dict = {}  # {title|outcome|wallet: True}
+
     for a in top15:
         if a.get('is_lp'):
             continue  # skip LP accounts
@@ -131,17 +135,45 @@ def scan_consensus(top15):
                 # Skip near-resolved (mid > 0.92 or < 0.08) — stale
                 if mid > 0.92 or mid < 0.08: continue
                 if outcome not in ('YES', 'NO'): continue
+
+                # FIX 1: Deduplicate — count each unique trader only once per market/side
+                dedup_key = f"{title}|{outcome}|{a['wallet']}"
+                if dedup_key in market_account_seen:
+                    continue
+                market_account_seen[dedup_key] = True
+
+                # FIX 2: Liquidity check — reject ghost books
+                tok = p.get('asset', '')
+                if tok:
+                    try:
+                        book_r = requests.get(
+                            f'https://clob.polymarket.com/book?token_id={tok}', timeout=5)
+                        if book_r.ok:
+                            book = book_r.json()
+                            bids = book.get('bids', [])
+                            asks = book.get('asks', [])
+                            # Spread check: (best_ask - best_bid) / mid > 5%
+                            best_bid = float(bids[0].get('price', 0)) if bids else 0
+                            best_ask = float(asks[0].get('price', 1)) if asks else 1
+                            spread_pct = (best_ask - best_bid) / mid if mid > 0 else 1
+                            # Depth check: top 3 ask levels total USDC >= $500
+                            depth = sum(float(a2.get('price',0))*float(a2.get('size',0))
+                                       for a2 in asks[:3])
+                            if spread_pct > 0.05 or depth < 500:
+                                continue  # ghost book — skip
+                    except:
+                        pass  # if orderbook check fails, allow through
+
                 drift = mid - avg
-                # Downgrade if price moved significantly against them (they may be wrong)
                 market_map[title][outcome].append({
-                    'account':  a['name'],
-                    'rank':     a['all_rank'],
-                    'pnl':      a['pnl_all'],
-                    'val':      val,
-                    'avg':      avg,
-                    'mid':      mid,
-                    'drift':    round(drift, 3),
-                    'entry_stale': abs(drift) > 0.12,  # entered at much better price
+                    'account':     a['name'],
+                    'rank':        a['all_rank'],
+                    'pnl':         a['pnl_all'],
+                    'val':         val,
+                    'avg':         avg,
+                    'mid':         mid,
+                    'drift':       round(drift, 3),
+                    'entry_stale': abs(drift) > 0.12,
                 })
         except:
             pass
@@ -168,13 +200,25 @@ def scan_consensus(top15):
                       'moderate' if n >= 2 and stale_fraction < 0.6 else \
                       'weak'
 
+            # CONSENSUS vs CONVICTION vs WATCH labeling
+            # CONSENSUS: 3+ unique traders same side
+            # CONVICTION: 2 traders but top-ranked acct (rank <=5) leading
+            # WATCH: 2 traders, neither top-5
+            trigger = (
+                'CONSENSUS'  if n >= 3 else
+                'CONVICTION' if (n == 2 and top_rank <= 5) else
+                'WATCH'
+            )
+            acct_names = [a['account'] for a in accts]
+
             key = f"{title}|{side}"
             consensus[key] = {
                 'title':         title,
                 'side':          side,
                 'count':         n,
                 'quality':       quality,
-                'accounts':      [a['account'] for a in accts],
+                'trigger':       trigger,
+                'accounts':      acct_names,
                 'opposing':      [a['account'] for a in opp],
                 'avg_entry':     round(avg_entry, 3),
                 'cur_mid':       round(cur_mid, 3),
@@ -183,6 +227,10 @@ def scan_consensus(top15):
                 'top_rank':      top_rank,
                 'total_val':     round(total_val, 2),
                 'ts':            time.time(),
+                'log':           (
+                    f"TRIGGER={trigger} | {n}x {side} @ {round(cur_mid,3)} "
+                    f"| accounts={acct_names} | drift={round(avg_drift,3):+.3f}"
+                ),
             }
 
     return consensus
@@ -203,9 +251,10 @@ def run():
     strong = [(k,v) for k,v in consensus.items() if v['count'] >= 2]
     strong.sort(key=lambda x: (-x[1]['count'], x[1]['top_rank']))
     for key, c in strong[:10]:
-        stale_flag = ' [STALE ENTRIES]' if c['stale_fraction'] > 0.5 else ''
-        print(f"  [{c['count']}x {c['quality'].upper()}] {c['title'][:50]} → {c['side']} @ {c['cur_mid']:.3f}{stale_flag}")
-        print(f"    accounts={c['accounts']} drift={c['avg_drift']:+.3f}")
+        stale_flag = ' [STALE]' if c['stale_fraction'] > 0.5 else ''
+        trigger_icon = {'CONSENSUS': '👥', 'CONVICTION': '💪', 'WATCH': '👁'}.get(c.get('trigger',''), '')
+        print(f"  {trigger_icon}[{c['count']}x {c.get('trigger','?')}] {c['title'][:50]} → {c['side']} @ {c['cur_mid']:.3f}{stale_flag}")
+        print(f"    {c.get('log', '')}")
 
     # Save cache
     with open(CACHE_FILE, 'w') as f:
