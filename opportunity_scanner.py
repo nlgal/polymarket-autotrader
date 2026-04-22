@@ -1380,6 +1380,22 @@ def main():
             # Sports markets without whale flow are coin-flips for us
             _pre_pass = False
             _pre_reason = "sports market, no UW signal"
+        elif _is_sports_pre and _has_uw_pre:
+            # UW signal present — but validate it has REAL directional edge.
+            # Unusual activity includes heavy SELLING (which inflates volume but is
+            # NOT a buy signal). Require: smart_volume >= $500 OR insider_trades tag.
+            # This prevents the Red Sox incident: UW flagged the game but the sharp
+            # money was on the Yankees, not Boston.
+            _uw_tok = next((t for t in mkt.get("clob_token_ids",[]) if t in (uw_signals or {})), None)
+            if _uw_tok and uw_signals:
+                _uw_s = uw_signals[_uw_tok]
+                _smart_vol  = float(_uw_s.get("smart_volume", 0) or 0)
+                _tags_list  = [tg.get("tag","") if isinstance(tg, dict) else str(tg)
+                               for tg in _uw_s.get("tags", [])]
+                _has_insider = "insider_trades" in _tags_list
+                if _smart_vol < 500 and not _has_insider:
+                    _pre_pass   = False
+                    _pre_reason = f"sports UW signal too weak (smart_vol=${_smart_vol:.0f}, no insiders)"
         
         if not _pre_pass:
             log(f"  [T3-SKIP] {q[:50]} — {_pre_reason}")
