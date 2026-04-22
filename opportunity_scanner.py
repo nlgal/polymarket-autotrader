@@ -1137,25 +1137,41 @@ Rules:
     except Exception as e:
         return "PASS", 0, f"err: {str(e)[:60]}"
 
-def fetch_news_snippets(question):
-    """Fetch relevant RSS headlines for the market question."""
+# News cache: avoids duplicate RSS fetches within 90 min for the same market
+_NEWS_CACHE: dict = {}   # {cache_key: (timestamp, result)}
+_NEWS_CACHE_TTL = 90 * 60  # 90 minutes
+
+def fetch_news_snippets(question, force_fresh=False):
+    """Fetch relevant RSS headlines for the market question.
+    Cached for 90 minutes. Pass force_fresh=True for HOT/VERY_HOT markets.
+    Saves ~15-20 RSS calls/hour when the scanner runs on overlapping candidates.
+    """
+    import time as _t
+    keywords = " ".join(question.split()[:6])
+    cache_key = keywords.lower().strip()
+    now = _t.time()
+
+    # Return cached result if fresh enough
+    if not force_fresh and cache_key in _NEWS_CACHE:
+        cached_ts, cached_result = _NEWS_CACHE[cache_key]
+        if now - cached_ts < _NEWS_CACHE_TTL:
+            return cached_result
+
     try:
-        # Use a broad query from the question
-        keywords = " ".join(question.split()[:6])
         r = requests.get(
             f"https://news.google.com/rss/search?q={keywords.replace(' ', '+')}&hl=en-US&gl=US&ceid=US:en",
             timeout=8, headers={"User-Agent": "Mozilla/5.0"})
-        
-        # Parse RSS simple
         import xml.etree.ElementTree as ET
         root = ET.fromstring(r.text)
         items = root.findall(".//item")
         snippets = []
         for item in items[:5]:
             title = item.findtext("title","")
-            pub = item.findtext("pubDate","")[:16]
+            pub   = item.findtext("pubDate","")[:16]
             snippets.append(f"- [{pub}] {title}")
-        return "\n".join(snippets) if snippets else "No recent news found"
+        result = "\n".join(snippets) if snippets else "No recent news found"
+        _NEWS_CACHE[cache_key] = (now, result)
+        return result
     except Exception as e:
         return f"News fetch error: {e}"
 
@@ -1454,8 +1470,9 @@ def main():
             action, edge, reasoning = _cached_score
             log(f"  [SCAN-CACHE] {q[:50]} — reusing {action} edge={edge:.2f}")
         else:
-            # Get news
-            snippets = fetch_news_snippets(q)
+            # Get news — force fresh fetch for HOT/VERY_HOT (bypass 90min cache)
+            _force_news = _vel["tier"] in ("VERY_HOT", "HOT")
+            snippets = fetch_news_snippets(q, force_fresh=_force_news)
             # Prepend velocity signal to snippets so Claude sees it prominently
             if _vel["tier"] in ("HOT", "WARM") and _vel["label"]:
                 snippets = f"MARKET VELOCITY ALERT: {_vel['label']}\n"                            f"This market is moving fast — weight recency heavily.\n\n" + snippets
