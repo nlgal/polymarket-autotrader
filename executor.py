@@ -339,7 +339,7 @@ class ExecutorHandler(BaseHTTPRequestHandler):
                     self.send_json(500, {"error": f"failed to download {script}", **dl})
                     return
                 log.warning(f"Download failed for {script}, using cached version")
-            result = run_command(f"{VENV_PYTHON} {script_path}", timeout=120)
+            result = run_command(f"{VENV_PYTHON} {script_path}", timeout=240)
             log.info(f"Script {script} exit={result['exit_code']}")
             self.send_json(200, result)
             return
