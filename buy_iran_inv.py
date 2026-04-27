@@ -2,9 +2,9 @@ import os, sys, requests
 sys.path.insert(0, '/opt/polymarket-agent')
 from dotenv import load_dotenv
 load_dotenv('/opt/polymarket-agent/.env')
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, OrderType
-from py_clob_client.order_builder.constants import BUY
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.clob_types import OrderArgs, OrderType
+from py_clob_client_v2.order_builder.constants import BUY
 
 KEY      = os.environ.get("POLYMARKET_PRIVATE_KEY","").strip()
 FUNDER   = os.environ.get("POLYMARKET_FUNDER_ADDRESS","").strip()
@@ -14,7 +14,7 @@ USDC     = 350.0
 
 client = ClobClient("https://clob.polymarket.com", key=KEY, chain_id=137,
                     signature_type=SIG_TYPE, funder=FUNDER or None)
-try:    creds = client.create_or_derive_api_creds()
+try:    creds = client.create_or_derive_api_key()
 except: creds = client.derive_api_key()
 client.set_api_creds(creds)
 

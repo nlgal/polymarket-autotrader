@@ -168,7 +168,7 @@ def save_state(state):
 # ── CLOB Client ───────────────────────────────────────────────────────────────
 
 def get_client():
-    from py_clob_client.client import ClobClient
+    from py_clob_client_v2.client import ClobClient
     sig_type = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "2"))
     client = ClobClient(
         host=CLOB_HOST,
@@ -178,7 +178,7 @@ def get_client():
         signature_type=sig_type,
     )
     try:
-        creds = client.create_or_derive_api_creds()
+        creds = client.create_or_derive_api_key()
     except AttributeError:
         creds = client.derive_api_key()
     client.set_api_creds(creds)
@@ -186,7 +186,7 @@ def get_client():
 
 def get_usdc_balance(client):
     try:
-        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+        from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
         info = client.get_balance_allowance(
             params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2)
         )
@@ -205,7 +205,7 @@ def get_midpoint(client, token_id):
 
 def get_open_orders(client):
     try:
-        from py_clob_client.clob_types import OpenOrderParams
+        from py_clob_client_v2.clob_types import OpenOrderParams
         return client.get_orders(OpenOrderParams()) or []
     except Exception as e:
         log(f"Open orders error: {e}")
@@ -232,8 +232,8 @@ def cancel_all(client, open_orders):
 
 def place_buy(client, token_id, price, shares, label):
     """Place a GTC BUY limit order. Returns order_id or None."""
-    from py_clob_client.order_builder.constants import BUY
-    from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+    from py_clob_client_v2.order_builder.constants import BUY
+    from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
     try:
         tick     = client.get_tick_size(token_id)
         neg_risk = client.get_neg_risk(token_id)

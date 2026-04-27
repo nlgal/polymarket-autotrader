@@ -992,11 +992,11 @@ def ensure_allowances(state):
                 timeout=10
             )
             if pos_resp.status_code == 200:
-                from py_clob_client.clob_types import BalanceAllowanceParams as _BAP, AssetType as _AT
+                from py_clob_client_v2.clob_types import BalanceAllowanceParams as _BAP, AssetType as _AT
                 # Need a CLOB client to call update_balance_allowance
                 # Build one from env
-                from py_clob_client.client import ClobClient as _CC
-                from py_clob_client.clob_types import ApiCreds as _AC
+                from py_clob_client_v2.client import ClobClient as _CC
+                from py_clob_client_v2.clob_types import ApiCreds as _AC
                 _pk = os.environ.get("POLYMARKET_PRIVATE_KEY", "").strip()
                 _fu = os.environ.get("POLYMARKET_FUNDER_ADDRESS", "").strip()
                 _st = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "2"))
@@ -1065,7 +1065,7 @@ def save_state(state):
 # ── CLOB Client ───────────────────────────────────────────────────────────────
 
 def get_client():
-    from py_clob_client.client import ClobClient
+    from py_clob_client_v2.client import ClobClient
     sig_type = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "2"))
     client = ClobClient(
         host=CLOB_HOST,
@@ -1075,7 +1075,7 @@ def get_client():
         signature_type=sig_type,
     )
     try:
-        creds = client.create_or_derive_api_creds()
+        creds = client.create_or_derive_api_key()
     except AttributeError:
         creds = client.derive_api_key()
     client.set_api_creds(creds)
@@ -1106,7 +1106,7 @@ def get_equity(client):
         log(f"Equity value API failed: {e}", Fore.YELLOW)
     try:
         # CLOB free cash (USDC available for trading)
-        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+        from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
         balance_info = client.get_balance_allowance(
             params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2)
         )
@@ -1125,7 +1125,7 @@ def get_equity(client):
 
 def get_portfolio_stats(client):
     try:
-        from py_clob_client.clob_types import OpenOrderParams
+        from py_clob_client_v2.clob_types import OpenOrderParams
         orders = client.get_orders(OpenOrderParams())
         open_count = len(orders)
         deployed = sum(
@@ -2078,8 +2078,8 @@ def _pre_trade_checklist(market, action, source="unknown"):
 
 
 def place_trade(client, market, action, size_usdc):
-    from py_clob_client.order_builder.constants import BUY
-    from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+    from py_clob_client_v2.order_builder.constants import BUY
+    from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
 
     # ── Pre-trade checklist: runs regardless of which code path called us ─────
     _ok, _reason = _pre_trade_checklist(market, action, source="place_trade")
@@ -2119,7 +2119,7 @@ def place_trade(client, market, action, size_usdc):
             log_trade_outcome(market, action, size_usdc, market.get("edge", 0), receipt)
             # Pre-approve conditional token allowance so we can sell this position later
             try:
-                from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+                from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
                 client.update_balance_allowance(
                     params=BalanceAllowanceParams(
                         asset_type=AssetType.CONDITIONAL,
@@ -2185,7 +2185,7 @@ def calculate_size(edge, mode, equity_now, deployed, market_price=0.5, source_co
 # ── Order Management ─────────────────────────────────────────────────────────
 
 def cancel_and_resubmit_stale_orders(client, current_markets_by_token):
-    from py_clob_client.clob_types import OpenOrderParams
+    from py_clob_client_v2.clob_types import OpenOrderParams
 
     freed_usdc   = 0.0
     resubmitted  = 0
@@ -2482,8 +2482,8 @@ def run_oracle_checks(client):
             tg(f"⚠️ <b>Oracle exit (final 24h)</b>\n{title[:60]}\nReason: {reason[:150]}\nSelling ${cur_val:.0f} position")
             # Execute the sell
             try:
-                from py_clob_client.order_builder.constants import SELL as _SELL
-                from py_clob_client.clob_types import OrderArgs as _OA, OrderType as _OT, PartialCreateOrderOptions as _PCO
+                from py_clob_client_v2.order_builder.constants import SELL as _SELL
+                from py_clob_client_v2.clob_types import OrderArgs as _OA, OrderType as _OT, PartialCreateOrderOptions as _PCO
                 _book = client.get_midpoint(token_id)
                 _mid  = float(_book.get("mid", 0.5))
                 _tick     = client.get_tick_size(token_id)
@@ -2704,8 +2704,8 @@ def check_thesis_invalidation(client):
 def _execute_thesis_sell(client, token_id: str, shares: float, reason: str):
     """Execute a market sell for thesis invalidation."""
     try:
-        from py_clob_client.order_builder.constants import SELL
-        from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+        from py_clob_client_v2.order_builder.constants import SELL
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
         book = client.get_midpoint(token_id)
         cur_price = float(book.get("mid", 0.5))
         tick      = client.get_tick_size(token_id)
@@ -2899,8 +2899,8 @@ def manage_positions(client):
                 log(f"[PROFIT-LOCK] NO position +{gain_pct*100:.0f}% gain — selling half ({half_shares} shares)", Fore.GREEN)
                 tg(f"🔒 <b>Profit-lock: selling half</b>\nNO gain {gain_pct*100:.0f}% (entry {no_entry:.3f} → now {no_current:.3f})\nSelling {half_shares} of {shares:.0f} shares to lock gain")
                 try:
-                    from py_clob_client.order_builder.constants import SELL as _SELL
-                    from py_clob_client.clob_types import OrderArgs as _OA, OrderType as _OT, PartialCreateOrderOptions as _PCO
+                    from py_clob_client_v2.order_builder.constants import SELL as _SELL
+                    from py_clob_client_v2.clob_types import OrderArgs as _OA, OrderType as _OT, PartialCreateOrderOptions as _PCO
                     _tick     = client.get_tick_size(token_id)
                     _neg_risk = client.get_neg_risk(token_id)
                     _tick_f   = float(_tick)
@@ -2928,8 +2928,8 @@ def manage_positions(client):
         if should_sell:
             log(f"SELL SIGNAL: {reason}", Fore.CYAN)
             try:
-                from py_clob_client.order_builder.constants import SELL
-                from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+                from py_clob_client_v2.order_builder.constants import SELL
+                from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
                 tick     = client.get_tick_size(token_id)
                 neg_risk = client.get_neg_risk(token_id)
                 tick_f   = float(tick)
@@ -2941,7 +2941,7 @@ def manage_positions(client):
                 import math as _math
                 _clob_bal = shares
                 try:
-                    from py_clob_client.clob_types import BalanceAllowanceParams as _BAP2, AssetType as _AT2
+                    from py_clob_client_v2.clob_types import BalanceAllowanceParams as _BAP2, AssetType as _AT2
                     _bal_resp = client.get_balance_allowance(params=_BAP2(
                         asset_type=_AT2.CONDITIONAL, token_id=token_id, signature_type=2))
                     _raw = int(_bal_resp.get("balance", 0))
@@ -3276,12 +3276,12 @@ def run_cycle(client, state):
                             _completed.append(_sig)
                             continue
                         log(f"  [SELL-SIG] {_lbl}: {_shr:.0f}sh @ {_sp:.4f} (mid={_mid:.4f})")
-                        from py_clob_client.order_builder.constants import SELL as _SELL_CONST
-                        from py_clob_client.clob_types import OrderArgs as _OAS, OrderType as _OTS
+                        from py_clob_client_v2.order_builder.constants import SELL as _SELL_CONST
+                        from py_clob_client_v2.clob_types import OrderArgs as _OAS, OrderType as _OTS
                         # Try with PartialCreateOrderOptions first, fall back to simple create_order
                         _ord = None
                         try:
-                            from py_clob_client.clob_types import PartialCreateOrderOptions as _PCOS
+                            from py_clob_client_v2.clob_types import PartialCreateOrderOptions as _PCOS
                             _ord = client.create_order(
                                 _OAS(token_id=_tok, price=_sp, size=_shr, side=_SELL_CONST),
                                 _PCOS(tick_size=_tick, neg_risk=False)
@@ -3289,7 +3289,7 @@ def run_cycle(client, state):
                         except Exception:
                             # neg_risk param not supported for this market — try without
                             try:
-                                from py_clob_client.clob_types import PartialCreateOrderOptions as _PCOS2
+                                from py_clob_client_v2.clob_types import PartialCreateOrderOptions as _PCOS2
                                 _ord = client.create_order(
                                     _OAS(token_id=_tok, price=_sp, size=_shr, side=_SELL_CONST),
                                     _PCOS2(tick_size=_tick)
@@ -3421,7 +3421,7 @@ def run_cycle(client, state):
     # Check available balance (use USDC cash only for new trade sizing)
     # equity_now includes position values but we can only spend USDC cash
     try:
-        from py_clob_client.clob_types import BalanceAllowanceParams as _BAP3, AssetType as _AT3
+        from py_clob_client_v2.clob_types import BalanceAllowanceParams as _BAP3, AssetType as _AT3
         _usdc_info = client.get_balance_allowance(
             params=_BAP3(asset_type=_AT3.COLLATERAL, signature_type=2))
         _usdc_cash = float(_usdc_info.get("balance", 0)) / 1e6

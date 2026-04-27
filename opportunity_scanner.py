@@ -486,11 +486,11 @@ def check_commodity_reality(question, yes_p):
 
 def get_usdc_balance():
     """Get available USDC cash."""
-    from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+    from py_clob_client_v2.client import ClobClient
+    from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
     client = ClobClient("https://clob.polymarket.com", key=PRIVATE_KEY,
                         chain_id=137, signature_type=2, funder=FUNDER)
-    c = client.create_or_derive_api_creds()
+    c = client.create_or_derive_api_key()
     client.set_api_creds(c)
     bal = client.get_balance_allowance(params=BalanceAllowanceParams(
         asset_type=AssetType.COLLATERAL, signature_type=2))
@@ -1230,9 +1230,9 @@ def has_real_liquidity(token_id, side="YES", min_depth=2000):
 
 def place_trade(client, token_id, side, size, neg_risk, tick, yes_price):
     """Place a market order."""
-    from py_clob_client.clob_types import (OrderArgs, OrderType,
+    from py_clob_client_v2.clob_types import (OrderArgs, OrderType,
         PartialCreateOrderOptions, BalanceAllowanceParams, AssetType)
-    from py_clob_client.order_builder.constants import BUY, SELL
+    from py_clob_client_v2.order_builder.constants import BUY, SELL
     
     try:
         # Approve conditional token
