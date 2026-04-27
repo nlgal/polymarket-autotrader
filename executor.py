@@ -201,6 +201,7 @@ ALLOWED_SCRIPTS = {
     "dump_whales.py",
     "read_watchlist.py",
     "purge_sports_state.py",
+    "install_v2.py",
     "whale_consensus.py",
     "uw_diag.py",
 }
