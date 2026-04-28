@@ -520,14 +520,20 @@ def run_market(client, mkt, state, open_orders, usdc_avail):
     if placed == 2:
         # 50/50 balanced: both sides placed, full reward score
         est_share = (target / 92000) * 100
-        est_daily = mkt["pool_day"] * (est_share / 100)  # no multiplier: Qmin = min(Q1,Q2)
-        log(f"[{label}] ✓ Both sides placed (50/50) | est ~${est_daily:.2f}/day LP rewards")
+        est_daily_pool   = mkt["pool_day"] * (est_share / 100)
+        # V2: makers also earn 25% rebate on taker fees from fills
+        # Estimate: $5 in fills/day × 25% rebate = small but real
+        est_maker_rebate = 0.25  # rough estimate — actual depends on fill rate
+        est_daily = est_daily_pool + est_maker_rebate
+        log(f"[{label}] ✓ Both sides placed (50/50) | est ~${est_daily:.2f}/day (pool ${est_daily_pool:.2f} + rebate ~${est_maker_rebate:.2f})")
     elif placed == 1:
         # One-sided: score = Q_one / c where c=3 (penalty for one-sided)
         est_share = (target / 92000) * 100
-        est_daily = mkt["pool_day"] * (est_share / 100) / 3  # penalized 3× per formula
-        log(f"[{label}] → One-sided order (directional conflict) | est ~${est_daily:.2f}/day LP rewards")
-        log(f"[{label}]   Note: one-sided beats unbalanced two-sided (MuddyRC, Apr 2026)")
+        est_daily_pool   = mkt["pool_day"] * (est_share / 100) / 3
+        est_maker_rebate = 0.10  # lower rebate estimate (only one side fills)
+        est_daily = est_daily_pool + est_maker_rebate
+        log(f"[{label}] → One-sided order | est ~${est_daily:.2f}/day (pool ${est_daily_pool:.2f} + rebate ~${est_maker_rebate:.2f})")
+        log(f"[{label}]   V2: makers earn 0% fees + 25% rebate on taker fills (MuddyRC/V2 docs)")
     else:
         log(f"[{label}] ✗ No orders placed")
 
