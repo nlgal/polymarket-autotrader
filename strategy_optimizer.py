@@ -316,7 +316,8 @@ def score_config(cfg, trade_history):
     Score a config against historical trades.
     Simulates which trades the config WOULD have allowed, and evaluates their P&L.
     
-    Scoring formula: win_rate * avg_pnl_pct * (1 + large_win_bonus)
+    Scoring formula: outlier-adjusted win_rate * avg_pnl_pct (strips top 2 wins to avoid overfitting).
+    Per OPERATING_CONSTITUTION: never score on outlier-driven P&L.
     Higher = better config. Range roughly 0–100.
     """
     if not trade_history:
@@ -352,20 +353,41 @@ def score_config(cfg, trade_history):
     win_rate   = len(wins) / len(passing_trades) if passing_trades else 0
     avg_pnl_pct = sum(t["pnl_pct"] for t in passing_trades) / len(passing_trades)
 
-    # Bonus for avoiding large losses
-    large_loss_count = len([t for t in passing_trades if t["pnl"] < -30])
+    # ── Outlier-adjusted scoring (per OPERATING_CONSTITUTION v2.0) ─────────────
+    # Strip top 2 wins before scoring. A config that depends on outliers is not better.
+    # This prevents the optimizer from blindly chasing strategies that only work
+    # because of 1-2 fat-tail events (e.g. the Israel/Iran ceasefire trades).
+    sorted_by_pnl = sorted(passing_trades, key=lambda x: -x["pnl"])
+    adj_trades     = sorted_by_pnl[2:] if len(sorted_by_pnl) > 4 else passing_trades
+    adj_wins       = [t for t in adj_trades if t["pnl"] > 0]
+    adj_losses     = [t for t in adj_trades if t["pnl"] <= 0]
+    adj_win_rate   = len(adj_wins) / len(adj_trades) if adj_trades else 0
+    adj_pnl        = sum(t["pnl"] for t in adj_trades)
+    adj_avg_pct    = sum(t["pnl_pct"] for t in adj_trades) / len(adj_trades) if adj_trades else 0
+    adj_pf         = (sum(t["pnl"] for t in adj_wins) / abs(sum(t["pnl"] for t in adj_losses))
+                      if adj_losses else 9.99)
+
+    # Penalty for large losses
+    large_loss_count   = len([t for t in passing_trades if t["pnl"] < -30])
     large_loss_penalty = large_loss_count * 5
 
-    # Score: win_rate (0-1) * avg_pnl_pct (can be negative) - penalty
-    score = (win_rate * 100) + (avg_pnl_pct * 0.5) - large_loss_penalty
+    # Primary score is OUTLIER-ADJUSTED: adj win_rate * adj avg_pnl_pct
+    # Secondary: bonus if full PF > 1.5 (real edge signal)
+    pf_bonus = max(0, (adj_pf - 1.0) * 3) if adj_pf < 99 else 15
+    score = (adj_win_rate * 100) + (adj_avg_pct * 0.5) - large_loss_penalty + pf_bonus
 
     details = {
-        "n_trades": len(passing_trades),
-        "win_rate": round(win_rate * 100, 1),
-        "total_pnl": round(total_pnl, 2),
-        "avg_pnl_pct": round(avg_pnl_pct, 1),
-        "large_losses": large_loss_count,
-        "score": round(score, 2),
+        "n_trades":         len(passing_trades),
+        "win_rate":         round(win_rate * 100, 1),
+        "total_pnl":        round(total_pnl, 2),
+        "avg_pnl_pct":      round(avg_pnl_pct, 1),
+        "large_losses":     large_loss_count,
+        # Outlier-adjusted metrics
+        "adj_n":            len(adj_trades),
+        "adj_win_rate":     round(adj_win_rate * 100, 1),
+        "adj_pnl":          round(adj_pnl, 2),
+        "adj_pf":           round(adj_pf, 2),
+        "score":            round(score, 2),
     }
     return round(score, 2), details
 
