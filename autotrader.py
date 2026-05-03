@@ -504,6 +504,41 @@ PROFIT_TARGET         = 0.80
 STOP_LOSS             = 0.35
 NEAR_RESOLUTION_THRESHOLD = 0.99  # Only sell when essentially resolved (was 0.94 — sold Spain/Duke at 92c)
 PROFIT_LOCK_GAIN      = 0.40    # Sell half when unrealized gain on NO position ≥ 40%
+
+# ── Three-Bucket Operating Model ──────────────────────────────────────────────────
+#   SPORTS       = grind edge        scale slowly, repeatable, DK picks drive entry
+#   GEO_POLITICS = asymmetric edge   stay small, allow fat-tail upside, don't oversize
+#   CALENDAR     = timing edge       HARD CAP on loss — most dangerous bucket
+
+BUCKET_GEO_MAX_USDC        = 150  # max single geo/politics position
+BUCKET_CALENDAR_MAX_LOSS   = 200  # auto-sell if calendar spread position unrealized loss > this
+BUCKET_SPORTS_SCALE_FACTOR = 1.0  # relative to normal Kelly (1.0 = no boost; grow slowly)
+
+# Calendar spread detection: title contains a date + "extended by" or "by April/May/June"
+import re as _re_bucket
+_CAL_PATTERN = _re_bucket.compile(
+    r'(extended by|by (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|ceasefire.*by|deal.*by)',
+    _re_bucket.IGNORECASE
+)
+
+def classify_bucket(title: str) -> str:
+    """Classify a market title into SPORTS | GEO | CALENDAR."""
+    t = title.lower()
+    if _CAL_PATTERN.search(t):
+        return 'CALENDAR'
+    sports_kw = ['nba','nfl','mlb','nhl','vs.','fc','soccer','ufc','mma',
+                 'cavaliers','pistons','lakers','celtics','yankees','red sox',
+                 'dodgers','76ers','pacers','spurs','nuggets','warriors','thunder',
+                 'maverick','knicks','bucks','nets','bulls','hawks','hornets',
+                 'pelicans','grizzlies','timberwolves','blazers','raptors']
+    if any(k in t for k in sports_kw):
+        return 'SPORTS'
+    geo_kw = ['iran','ukraine','russia','china','taiwan','israel','hungary',
+              'peru','pakistan','ceasefire','invasion','nuclear','peace deal',
+              'regime','election','invasion','diplomatic']
+    if any(k in t for k in geo_kw):
+        return 'GEO'
+    return 'GEO'  # default: treat unknown as geo (smaller size)
 PROFIT_LOCK_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profit_locks.json")
 MAX_PER_MARKET_USDC   = 200   # Never put more than $200 into a single market
 MIN_FREE_BALANCE      = 20    # Always keep $20 free (Polymarket minimum)
@@ -2869,6 +2904,19 @@ def manage_positions(client):
         should_sell = False
         reason      = ""
 
+        # ── Calendar Spread Hard Loss Cap ──────────────────────────────────────
+        # Calendar spreads ("by April X", "extended by", etc.) are timing bets.
+        # They lose fast when the event resolution date passes. Hard cut at $200 loss.
+        _bucket = classify_bucket(title)
+        if _bucket == 'CALENDAR':
+            _cost     = avg_entry * shares if trade_side == 'BUY' else (1.0 - avg_entry) * shares
+            _cur_val  = current_price * shares if trade_side == 'BUY' else (1.0 - current_price) * shares
+            _unreal   = _cur_val - _cost
+            if _unreal < -BUCKET_CALENDAR_MAX_LOSS:
+                should_sell = True
+                reason = f"CALENDAR hard loss cap: unrealized ${_unreal:.2f} < -${BUCKET_CALENDAR_MAX_LOSS}"
+                log(f"[CALENDAR-CAP] {title[:50]} | loss ${_unreal:.2f} — hard exit", Fore.RED)
+
         if trade_side == "BUY":
             if current_price >= PROFIT_TARGET:
                 should_sell = True
@@ -3733,6 +3781,18 @@ def run_cycle(client, state):
         size = calculate_size(edge, mode, equity_now, stats["deployed"], market_price=m.get("price", 0.5), source_count=src_cnt)
         size = min(size, available)  # Never exceed available free balance
         size = min(size, MAX_PER_MARKET_USDC - already_in)  # Per-market cap
+
+        # ── Three-Bucket Sizing Caps ─────────────────────────────────────────
+        _mkt_bucket = classify_bucket(m.get('question', '') + ' ' + m.get('title', ''))
+        if _mkt_bucket == 'CALENDAR':
+            # Calendar spreads: dangerous timing edge — hard cap $100
+            size = min(size, 100)
+            log(f"  [BUCKET:CALENDAR] Size capped at $100 (timing risk)", Fore.YELLOW)
+        elif _mkt_bucket == 'GEO':
+            # Geo/politics: asymmetric edge — keep small to avoid fat-tail overfit
+            size = min(size, BUCKET_GEO_MAX_USDC)
+            log(f"  [BUCKET:GEO] Size capped at ${BUCKET_GEO_MAX_USDC} (asymmetric edge)", Fore.CYAN)
+        # SPORTS: no extra cap — grind edge, scale with mode/Kelly naturally
         if size < SIZE_MIN[mode]:
             log(f"  Skipping — size ${size:.2f} below mode minimum ${SIZE_MIN[mode]}", Fore.YELLOW)
             continue
