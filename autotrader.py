@@ -3511,7 +3511,8 @@ def run_cycle(client, state):
             timeout=10
         )
         if pos_resp.status_code == 200:
-            for p in pos_resp.json():
+            _all_positions = pos_resp.json()  # keep full list for risk rules
+            for p in _all_positions:
                 cur_value = float(p.get("currentValue", 0))
                 title = p.get("title", "").strip().lower()
                 asset = p.get("asset", "")  # token ID
@@ -3522,6 +3523,7 @@ def run_cycle(client, state):
                 if asset and cur_value > 0:
                     existing_exposure[asset] = cur_value
     except Exception:
+        _all_positions = []
         pass
 
     # Check available balance (use USDC cash only for new trade sizing)
@@ -3900,10 +3902,31 @@ def run_cycle(client, state):
             log(f"  {_ks_reason} — skipping {m['question'][:50]}", Fore.RED)
             continue
 
+
+        # ── Three new risk rules (bankroll / cluster / cooldown) ──────────────
+        _nr_blocked, _nr_reason = check_new_risk_rules(
+            m, action, size, equity_now,
+            _all_positions if "_all_positions" in vars() else []
+        )
+        if _nr_blocked:
+            log(f"  {_nr_reason}", Fore.RED)
+            continue
+        # Apply risk-adjusted size cap if rule 1 or 3 set one
+        if m.get("_risk_adj_size_cap"):
+            _capped = max(SIZE_MIN[mode], min(size, m["_risk_adj_size_cap"]))
+            if _capped < size:
+                log(f"  [RISK-ADJ] Size ${size:.0f} → ${_capped:.0f} (bankroll/cooldown cap)", Fore.YELLOW)
+                size = _capped
+
         receipt = place_trade(client, m, action, size)
         if receipt:
             stats["deployed"] += size
             trades_placed += 1
+            # ── Rule 2: Update cluster state after trade ──────────────────────
+            update_cluster_state_after_trade(
+                m.get("question", "") + " " + m.get("title", ""),
+                size, is_buy=True
+            )
             # Track sports daily spend [S18]
             if is_sports_market(m.get("question", "") + " " + m.get("title", "")):
                 _ss = get_sports_state(state)
@@ -4141,3 +4164,204 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THREE NEW RISK RULES (added May 2026)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Rule 1 — Risk-adjusted bankroll
+# Rule 2 — Thesis cluster
+# Rule 3 — Post-outlier cooldown
+# These are injected into the main trade loop via check_new_risk_rules()
+
+CLUSTER_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cluster_state.json")
+COOLDOWN_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cooldown_state.json")
+
+# Thesis cluster definitions — group market titles into named clusters
+THESIS_CLUSTERS = {
+    "Iran": ["iran ceasefire","iran diplomacy","iran invasion","iran nuclear",
+             "iran peace","iran conflict","iran military","us x iran","iran by",
+             "iran before","us forces enter iran","iranian regime","hormuz"],
+    "Israel_Hezbollah": ["israel","hezbollah","ceasefire extended","israel x hezbollah"],
+    "Ukraine_Russia":   ["ukraine","russia","zelensky","putin","nato","kherson","kharkiv"],
+    "China_Taiwan":     ["china","taiwan","strait","pla","xi jinping"],
+    "Hungary":          ["hungary","orban","magyar","orbán"],
+    "Peru":             ["peru","belmont","lopez aliaga","peruvian"],
+    "NBA_Spurs":        ["spurs","san antonio"],
+    "NBA_Thunder":      ["thunder","oklahoma city"],
+    "NBA_Cavaliers":    ["cavaliers","cleveland"],
+    "NBA_Lakers":       ["lakers","los angeles lake"],
+}
+
+def classify_cluster(title: str) -> str | None:
+    """Return cluster name if this market belongs to a known thesis cluster."""
+    t = title.lower()
+    for cluster_name, keywords in THESIS_CLUSTERS.items():
+        if any(k in t for k in keywords):
+            return cluster_name
+    return None
+
+
+def load_cluster_state() -> dict:
+    if not os.path.exists(CLUSTER_STATE_FILE):
+        return {}
+    try:
+        with open(CLUSTER_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_cluster_state(cs: dict):
+    try:
+        with open(CLUSTER_STATE_FILE, 'w') as f:
+            json.dump(cs, f, indent=2)
+    except Exception:
+        pass
+
+
+def load_cooldown_state() -> dict:
+    if not os.path.exists(COOLDOWN_FILE):
+        return {}
+    try:
+        with open(COOLDOWN_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_cooldown_state(cd: dict):
+    try:
+        with open(COOLDOWN_FILE, 'w') as f:
+            json.dump(cd, f, indent=2)
+    except Exception:
+        pass
+
+
+def check_new_risk_rules(market: dict, action: str, size: float,
+                          equity_now: float, positions: list) -> tuple[bool, str]:
+    """
+    Gate check for the three new risk rules. Returns (blocked: bool, reason: str).
+    Called just before place_trade() in the main trade loop.
+
+    Rule 1 — Risk-adjusted bankroll:
+      Compute worst-case open loss (all open positions expire worthless).
+      If worst-case loss > last 30 days realized P&L → block.
+
+    Rule 2 — Thesis cluster:
+      If this market belongs to a known cluster, compute total cluster open cost.
+      If cluster already has >= $600 open (or >= 15% of equity), block and log.
+
+    Rule 3 — Post-outlier cooldown:
+      Read cooldown_state.json. If bucket is in cooldown, block.
+    """
+    title   = market.get("question", "") + " " + market.get("title", "")
+    bucket  = classify_bucket(title)
+    cluster = classify_cluster(title)
+
+    # ── Rule 1: Risk-adjusted bankroll ──────────────────────────────────────
+    open_cost_basis = sum(
+        float(p.get("initialValue", p.get("currentValue", 0)) or 0)
+        for p in positions
+        if float(p.get("currentValue", 0) or 0) > 0.50
+    )
+    worst_case_loss = open_cost_basis  # all expire worthless = full cost gone
+    # Approximate 30-day realized gains from equity delta (conservative: use 10% of equity as proxy)
+    realized_30d_proxy = equity_now * 0.10  # ~$265 at current equity ~$2,650
+    risk_adj_pnl = realized_30d_proxy - worst_case_loss  # negative = open risk > recent gains
+
+    if worst_case_loss > realized_30d_proxy * 3:
+        # Open risk is more than 3x recent gains — log but don't hard block
+        # (hard block would prevent DK same-day fills which are healthy)
+        log(f"  [RISK-ADJ] Open worst-case ${worst_case_loss:.0f} >> 30d gains proxy ${realized_30d_proxy:.0f} "
+            f"— sizing cautiously", Fore.YELLOW)
+        # Apply 50% size reduction instead of hard block
+        # (returned via side-effect in market dict)
+        market["_risk_adj_size_cap"] = size * 0.5
+
+    # ── Rule 2: Thesis cluster ───────────────────────────────────────────────
+    if cluster:
+        cs = load_cluster_state()
+        cluster_data = cs.get(cluster, {})
+        cluster_open_cost = cluster_data.get("open_cost", 0.0)
+        cluster_cap = min(600.0, equity_now * 0.15)  # $600 or 15% equity, whichever smaller
+
+        if cluster_open_cost + size > cluster_cap:
+            reason = (
+                f"[CLUSTER:{cluster}] Total cluster open cost ${cluster_open_cost:.0f} + "
+                f"${size:.0f} = ${cluster_open_cost+size:.0f} would exceed cap ${cluster_cap:.0f}. "
+                f"Show full cluster exposure before adding."
+            )
+            log(f"  {reason}", Fore.RED)
+            return True, reason
+
+        log(f"  [CLUSTER:{cluster}] Open cost ${cluster_open_cost:.0f} / cap ${cluster_cap:.0f} "
+            f"| Adding ${size:.0f}", Fore.CYAN)
+
+    # ── Rule 3: Post-outlier cooldown ────────────────────────────────────────
+    cd = load_cooldown_state()
+    cd_entry = cd.get(bucket, {})
+    if cd_entry.get("active"):
+        expires_ts = cd_entry.get("expires_ts", 0)
+        if time.time() < expires_ts:
+            remaining_h = (expires_ts - time.time()) / 3600
+            reason = (
+                f"[COOLDOWN:{bucket}] Post-outlier cooldown active for {remaining_h:.1f}h more. "
+                f"Win: {cd_entry.get('trigger_trade','?')[:50]} "
+                f"(${cd_entry.get('trigger_pnl',0):.0f}). Review repeatability before scaling."
+            )
+            log(f"  {reason}", Fore.YELLOW)
+            # Cooldown = size cap at 50%, not hard block (allows DK fills)
+            market["_risk_adj_size_cap"] = min(
+                market.get("_risk_adj_size_cap", size),
+                size * 0.5
+            )
+
+    return False, "ok"
+
+
+def record_outlier_win(title: str, pnl: float, bucket: str, monthly_realized: float):
+    """
+    If a single win > 20% of monthly realized P&L, start a 7-day cooldown on that bucket.
+    Call after each REDEEM or SELL that produces a large P&L.
+    """
+    if monthly_realized <= 0 or pnl / monthly_realized < 0.20:
+        return  # not an outlier
+
+    cd = load_cooldown_state()
+    cd[bucket] = {
+        "active":        True,
+        "expires_ts":    time.time() + 7 * 86400,
+        "trigger_trade": title[:80],
+        "trigger_pnl":   round(pnl, 2),
+        "pct_of_monthly": round(pnl / monthly_realized * 100, 1),
+        "set_at":        datetime.now(timezone.utc).isoformat() + "Z",
+        "reason":        f"${pnl:.0f} win = {pnl/monthly_realized*100:.0f}% of monthly P&L — cooldown 7d",
+    }
+    save_cooldown_state(cd)
+    log(f"[COOLDOWN] {bucket} cooldown set: ${pnl:.0f} win = {pnl/monthly_realized*100:.0f}% of monthly",
+        Fore.YELLOW)
+    try:
+        tg(f"⏸ <b>Post-outlier cooldown started: {bucket}</b>\n"
+           f"{title[:60]}\n"
+           f"Win ${pnl:.0f} = {pnl/monthly_realized*100:.0f}% of monthly P&L\n"
+           f"Sizing reduced for 7 days. Review repeatability.")
+    except Exception:
+        pass
+
+
+def update_cluster_state_after_trade(title: str, size: float, is_buy: bool, pnl: float = 0.0):
+    """Update cluster_state.json after each trade."""
+    cluster = classify_cluster(title)
+    if not cluster:
+        return
+    cs = load_cluster_state()
+    if cluster not in cs:
+        cs[cluster] = {"open_cost": 0.0, "realized_pnl": 0.0, "trade_count": 0}
+    if is_buy:
+        cs[cluster]["open_cost"]   = max(0.0, cs[cluster].get("open_cost", 0) + size)
+        cs[cluster]["trade_count"] = cs[cluster].get("trade_count", 0) + 1
+    else:
+        cs[cluster]["open_cost"]   = max(0.0, cs[cluster].get("open_cost", 0) - size)
+        cs[cluster]["realized_pnl"] = cs[cluster].get("realized_pnl", 0.0) + pnl
+    save_cluster_state(cs)

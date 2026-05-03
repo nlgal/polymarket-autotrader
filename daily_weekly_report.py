@@ -2,11 +2,15 @@ import requests, time, json, hmac, hashlib, re, math
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
-FUNDER = '0xc2c1892653C175113c65961C7F4227c18D09b52a'
-TOKEN  = '8619264163:AAFB8t_tAcUHcZxMH-O10OeAorcIh9Nk0tc'
-CHAT   = '1613579523'
-SERVER = 'http://167.71.68.143:8888'
-SECRET = 'REDACTED_SECRET'
+import os as _os
+from dotenv import load_dotenv as _ldenv
+_ldenv('/opt/polymarket-agent/.env')
+
+FUNDER = _os.environ.get('POLYMARKET_FUNDER_ADDRESS', '0xc2c1892653C175113c65961C7F4227c18D09b52a')
+TOKEN  = _os.environ.get('TELEGRAM_TOKEN', '')
+CHAT   = _os.environ.get('TELEGRAM_CHAT_ID', '1613579523')
+SERVER = _os.environ.get('EXECUTOR_SERVER', 'http://167.71.68.143:8888')
+SECRET = _os.environ.get('EXECUTOR_SECRET', '')
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────

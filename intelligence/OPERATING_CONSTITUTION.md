@@ -173,3 +173,65 @@ If only works on perfect timing: size at C level maximum.
 
 LOCKED (never modified by optimizer): This file, .env, private keys, CLOB execution code
 EDITABLE (optimizer may modify): scanner_config.json thresholds only
+
+---
+
+## RULE A — Risk-Adjusted Bankroll
+
+Never size from realized P&L alone.
+
+**Risk-adjusted P&L = realized P&L − worst-case open-position loss**
+
+Where worst-case = all open positions expire worthless (full cost basis).
+
+- Do not scale any category while open-position worst-case loss could erase the last 30 days of realized gains.
+- Every report must show: realized P&L, unrealized P&L, worst-case open loss, risk-adjusted P&L.
+- If risk-adjusted P&L is negative: reduce size across all categories until it recovers.
+
+---
+
+## RULE B — Thesis Cluster
+
+Group related markets into one risk cluster regardless of contract type.
+
+**Current clusters:** Iran (all contracts), Israel/Hezbollah, Ukraine/Russia, China/Taiwan, Hungary, Peru, NBA teams.
+
+For every cluster, before adding a new position:
+1. Show total cluster open cost
+2. Show realized P&L from cluster
+3. Show unrealized P&L from cluster
+4. Show worst-case cluster loss
+5. Classify positions as: complementary / hedged / redundant / contradictory
+6. Ask: is this cluster growing on fresh edge or emotional reinforcement?
+7. Ask: does this new trade reduce risk, hedge risk, or just add more exposure?
+
+**Do not add to a cluster without first showing full cluster exposure.**
+
+Cluster cap: min($600, 15% of equity) per cluster.
+
+---
+
+## RULE C — Post-Outlier Cooldown
+
+If a single trade generates > 20% of monthly realized P&L:
+
+1. Start a 7-day cooldown on that bucket
+2. During cooldown: size at 50% maximum
+3. Review whether the win was repeatable or lucky
+4. Check whether new trades are chasing the same storyline
+5. Do not open adjacent calendar spreads just because the previous window hit
+6. Require stronger evidence for related trades in the same cluster
+7. Do not assume the bot is smarter because one fat-tail trade worked
+
+Cooldown is tracked in cooldown_state.json. It does not block DK_ALPHA fills (same-day sports) — it only applies to BOT_INDEPENDENT, GEO, and CALENDAR bucket sizing.
+
+---
+
+## Final Gate (4 questions — ask before every new position)
+
+1. Is open risk already too high? (Rule A)
+2. Is this part of an existing thesis cluster? (Rule B)
+3. Are we adding fresh edge or just adding more exposure? (Rules B + C)
+4. Did a recent outlier win make us overconfident? (Rule C)
+
+If any answer creates risk without clear edge: **do not trade.**
