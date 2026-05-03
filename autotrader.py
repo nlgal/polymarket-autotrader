@@ -2984,6 +2984,7 @@ def manage_positions(client):
         # ── Calendar Spread Hard Loss Cap ──────────────────────────────────────
         # Calendar spreads ("by April X", "extended by", etc.) are timing bets.
         # They lose fast when the event resolution date passes. Hard cut at $200 loss.
+        title   = _title_lookup.get(token_id, "")  # resolve title for this token
         _bucket = classify_bucket(title)
         if _bucket == 'CALENDAR':
             _cost     = avg_entry * shares if trade_side == 'BUY' else (1.0 - avg_entry) * shares
