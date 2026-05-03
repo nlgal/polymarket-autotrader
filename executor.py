@@ -205,6 +205,8 @@ ALLOWED_SCRIPTS = {
     "test_v2.py",
     "whale_consensus.py",
     "uw_diag.py",
+    "sell_aitc_no.py",
+    "check_v2_methods.py",
 }
 
 
