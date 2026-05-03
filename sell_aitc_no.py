@@ -49,9 +49,20 @@ price = max(round((round(mid / tick) - 1) * tick, 6), 0.01)
 
 print(f"SELL AITC NO: {SHARES:.2f}sh @ {price:.3f} (mid={mid:.3f}) = ${SHARES * price:.2f}")
 
-# Plain create_order — no PartialCreateOrderOptions (avoids neg_risk allowance issue)
-order = client.create_order(OrderArgs(token_id=TOKEN, price=price, size=SHARES, side=SELL))
-resp  = client.post_order(order, OrderType.GTC)
+try:
+    # Plain create_order — no PartialCreateOrderOptions (avoids neg_risk allowance issue)
+    order = client.create_order(OrderArgs(token_id=TOKEN, price=price, size=SHARES, side=SELL))
+    print(f"Order signed: {type(order).__name__}")
+except Exception as e:
+    print(f"create_order FAILED: {e}")
+    sys.exit(1)
+
+try:
+    resp = client.post_order(order, OrderType.GTC)
+    print(f"post_order response: {resp}")
+except Exception as e:
+    print(f"post_order FAILED: {e}")
+    sys.exit(1)
 
 if resp and resp.get("success"):
     print(f"SUCCESS order_id={resp.get('orderID', '')} | {SHARES:.2f}sh @ {price:.3f} = ${SHARES * price:.2f}")
