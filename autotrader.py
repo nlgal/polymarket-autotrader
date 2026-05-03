@@ -2169,6 +2169,31 @@ def _pre_trade_checklist(market, action, source="unknown"):
         return False, (f"[PREFLIGHT] Trade price {trade_p:.3f} < 0.05. "
                        f"Near-zero payout. Source={source}")
 
+
+    # ── Check 6: Calendar market without timing evidence ─────────────────────
+    # Market selection rule: a correct thesis can still lose on a calendar
+    # if the date window is wrong. Require specific timing evidence.
+    import re as _re_cal
+    _cal_re_pt = _re_cal.compile(
+        r'(extended by|by (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|ceasefire.*by|deal.*by)',
+        _re_cal.IGNORECASE
+    )
+    if _cal_re_pt.search(q):
+        _has_timing = bool(
+            market.get("_market_sel_note") or
+            market.get("_has_rss") or
+            market.get("_has_pplx") or
+            market.get("_uw_yes_sig") or
+            market.get("_signal_source") == "MANUAL"
+        )
+        if not _has_timing:
+            return False, (
+                f"[PREFLIGHT] Calendar market, no timing evidence: '{q[:55]}'. "
+                f"Thesis may be right but date window may be wrong. "
+                f"Need specific timing evidence. Source={source}"
+            )
+        log(f"  [MARKET-SEL] Calendar with timing evidence — allowing: {q[:50]}", Fore.CYAN)
+
     return True, "ok"
 
 

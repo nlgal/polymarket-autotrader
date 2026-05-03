@@ -235,3 +235,39 @@ Cooldown is tracked in cooldown_state.json. It does not block DK_ALPHA fills (sa
 4. Did a recent outlier win make us overconfident? (Rule C)
 
 If any answer creates risk without clear edge: **do not trade.**
+
+---
+
+## RULE D — Market Selection
+
+Before entering any trade, compare at least 2–3 ways to express the thesis.
+Never trade the first matching market.
+
+**10-question market selection checklist:**
+1. What is the core idea?
+2. What markets express this idea?
+3. Which has the cleanest resolution criteria?
+4. Which has the best liquidity?
+5. Which has the least deadline/timing risk?
+6. Which has the most mispriced probability?
+7. Which has the cleanest exit path?
+8. Is there a simpler market with better risk/reward?
+9. Are we choosing this contract because it's best, or because it's exciting?
+10. Which market should we avoid even if the thesis is right?
+
+**Calendar market special rule:**
+A calendar market expresses a correct thesis through a fragile date window.
+Before trading any calendar market, compare against:
+- Broader event market (no deadline)
+- Later deadline market
+- Adjacent date market
+- Opposite side of overextended market
+- No trade
+
+Only use the calendar market if the timing edge is specifically justified.
+The system enforces this via Check 6 in _pre_trade_checklist() — a calendar
+market without timing evidence (no fresh news, no UW signal, no user direction)
+is blocked at the preflight gate.
+
+**Core principle:** A good thesis does not automatically mean a good trade.
+Choose the best contract, not the most obvious one.

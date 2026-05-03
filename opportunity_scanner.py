@@ -1081,6 +1081,13 @@ DESCRIPTION: {description}
 RECENT NEWS CONTEXT:
 {news_snippets}{_hormuz_section}{uw_section}{context_section}{_signal_section}
 
+MARKET SELECTION CHECK — answer before scoring:
+A good thesis does not automatically mean a good trade. Before recommending this market:
+- Is there a simpler (broader-window, longer-deadline) market expressing the same thesis?
+- If this is a CALENDAR market (deadline in title), is the timing edge strong enough to justify the extra risk?
+- If a simpler alternative exists (noted in UW SIGNAL above), prefer PASS on this market unless timing evidence is specific.
+- Calendar markets can lose even when the thesis is correct — the date window may simply be wrong.
+
 ANALYTICAL FRAMEWORK — apply this thinking before scoring:
 
 PLAYERS in this market:
@@ -1421,10 +1428,81 @@ def main():
         # ════════════════════════════════════════════════════════════════
         # End Tier 3 pre-filter
         # ════════════════════════════════════════════════════════════════
-        
+
+        # ════════════════════════════════════════════════════════════════
+        # Tier 3.5 — MARKET SELECTION (compare alternatives before scoring)
+        # Rule: Do not trade the first matching market. Choose the best
+        # expression of the thesis. A good thesis ≠ a good trade.
+        # ════════════════════════════════════════════════════════════════
+        import re as _re_sel
+
+        _cal_pattern = _re_sel.compile(
+            r'(extended by|by (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|ceasefire.*by|deal.*by)',
+            _re_sel.IGNORECASE
+        )
+        _is_calendar_mkt = bool(_cal_pattern.search(q))
+
+        if _is_calendar_mkt:
+            # Extract the core topic from the calendar title (e.g. "iran ceasefire")
+            _core_words = [w for w in _q_pre.split()
+                           if len(w) > 3 and w not in ('will','the','has','been','any','this','that',
+                                                         'from','with','have','into','than','over')][:4]
+            _core_topic = " ".join(_core_words[:3])
+
+            # Look for a cleaner (non-calendar, longer-window) alternative in candidates
+            _better_alternatives = []
+            for _alt in candidates:
+                _alt_q = _alt.get("question","").lower()
+                # Must share at least 2 core words with this market
+                if sum(1 for w in _core_words if w in _alt_q) < 2:
+                    continue
+                # Must NOT be a calendar spread itself
+                if _cal_pattern.search(_alt_q):
+                    continue
+                # Must have similar or better liquidity
+                if _alt.get("volume24h", 0) < mkt.get("volume24h", 0) * 0.3:
+                    continue
+                # Must not be the same market
+                if _alt.get("conditionId","") == mkt.get("conditionId",""):
+                    continue
+                _better_alternatives.append(_alt.get("question","")[:60])
+
+            if _better_alternatives:
+                # There is a simpler expression — flag it but do NOT block (scout still runs)
+                # The scorer will see this context and should prefer the simpler market
+                mkt["_calendar_alternatives"] = _better_alternatives[:2]
+                log(f"  [MARKET-SEL] Calendar market detected. Simpler alternatives found:", Fore.YELLOW)
+                for _ba in _better_alternatives[:2]:
+                    log(f"    → {_ba}", Fore.YELLOW)
+                log(f"  [MARKET-SEL] Scoring calendar anyway — will apply timing penalty in Claude prompt", Fore.YELLOW)
+                # Inject context for the Claude scorer
+                mkt["_market_sel_note"] = (
+                    f"CALENDAR MARKET WARNING: Before trading this date-specific contract, "
+                    f"compare against these simpler alternatives: {_better_alternatives[:2]}. "
+                    f"The thesis may be correct but the date window may be wrong. "
+                    f"Only recommend this market if timing edge is very strong."
+                )
+            else:
+                # No obvious alternative — proceed, but inject calendar caution
+                mkt["_market_sel_note"] = (
+                    f"CALENDAR MARKET: No simpler alternative found in current candidates. "
+                    f"Proceed only if timing evidence is specific to this date window."
+                )
+
+            # Apply size penalty for calendar markets without timing evidence
+            # (full block is handled by bucket cap in autotrader; here we just flag)
+            mkt["_calendar_timing_flag"] = True
+
+        # ════════════════════════════════════════════════════════════════
+        # End Tier 3.5
+        # ════════════════════════════════════════════════════════════════
+
         # Get UW signal
         uw_sig, uw_action_hint = get_uw_signal_for_market(mkt, uw_signals)
         uw_summary_text = uw_signal_summary(uw_sig)
+        # Append market selection context to uw_summary so Claude scorer sees it
+        if mkt.get("_market_sel_note"):
+            uw_summary_text = (uw_summary_text + "\n\n" + mkt["_market_sel_note"]).strip()
         uw_tags = uw_sig.get("tags", []) if uw_sig else []
         has_insider = any(t in uw_tags for t in ["insider_trades", "contrarian_whales", "whale_position"])
         if uw_sig:
