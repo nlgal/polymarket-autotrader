@@ -17,7 +17,9 @@ SIG_TYPE = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "2"))
 
 # AITC NO token
 TOKEN  = "106042778569020456846448290057936385726097394899443862594454878965392595546558"
-SHARES = 104.0
+# Actual CLOB balance from API: 103730000 units = 103.73 shares
+# Always floor to prevent 'not enough balance' 400 error
+SHARES = 103.73
 
 client = ClobClient("https://clob.polymarket.com", key=KEY, chain_id=137,
                     signature_type=SIG_TYPE, funder=FUNDER or None)
