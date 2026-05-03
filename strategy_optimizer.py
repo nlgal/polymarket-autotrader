@@ -878,6 +878,17 @@ def main():
     # Load optimization history
     history = load_history()
 
+    # ── Step 0: Grade newly-closed trades before scoring ────────────────────
+    try:
+        from trade_grader import run_grader
+        n_graded = run_grader(max_new=10, send_summary=True)
+        if n_graded > 0:
+            log(f"Trade grader: {n_graded} new trade(s) graded")
+        else:
+            log("Trade grader: nothing new to grade")
+    except Exception as _tg_err:
+        log(f"Trade grader error (non-fatal): {_tg_err}")
+
     # Fetch trade data (ground truth)
     log("Fetching trade history from Polymarket...")
     acts = fetch_trade_history(limit=200)

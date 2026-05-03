@@ -208,6 +208,7 @@ ALLOWED_SCRIPTS = {
     "sell_aitc_no.py",
     "check_v2_methods.py",
     "patch_sell_shares.py",
+    "trade_grader.py",
 }
 
 

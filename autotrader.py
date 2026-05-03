@@ -119,10 +119,24 @@ def _read_intel_files():
         _INTEL_CACHE["soul"] = ""
     try:
         p = os.path.join(INTEL_DIR, "lessons.md")
-        txt = open(p).read() if os.path.exists(p) else ""
-        lines = [l.strip() for l in txt.splitlines()
-                 if l.strip() and not l.strip().startswith("#") and len(l.strip()) > 20]
-        _INTEL_CACHE["lessons"] = "\n".join(lines[:12])
+        if os.path.exists(p):
+            txt = open(p).read()
+            # Parse by ## blocks; keep most recent 15 lessons (file grows from bottom)
+            blocks = re.split(r'(?=^## )', txt, flags=re.MULTILINE)
+            lesson_blocks = [b.strip() for b in blocks if b.strip().startswith('## ')]
+            # Most recent lessons are at the end; keep last 15
+            recent = lesson_blocks[-15:]
+            # Extract **Lesson:** lines from each block
+            lesson_lines = []
+            for blk in recent:
+                m = re.search(r'\*\*Lesson:\*\*\s*(.+)', blk)
+                hdr_m = re.search(r'^## (.+)$', blk, re.MULTILINE)
+                if m:
+                    hdr = hdr_m.group(1)[:50] if hdr_m else ''
+                    lesson_lines.append(f"[{hdr}] {m.group(1).strip()[:120]}")
+            _INTEL_CACHE["lessons"] = "\n".join(lesson_lines[-15:])
+        else:
+            _INTEL_CACHE["lessons"] = ""
     except Exception:
         _INTEL_CACHE["lessons"] = ""
     try:
