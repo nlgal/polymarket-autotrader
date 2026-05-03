@@ -632,6 +632,8 @@ def enter_position(client, market, pos_key, base_size, reason, state):
         'ladder_orders': ladder,
         'filled_ladder_count': 0,
         'reason':        reason,
+        'signal_source': 'DK_ALPHA' if 'DK Discord' in reason else 'BOT_INDEPENDENT',
+        'confidence_bucket': 'B',  # DK picks default to B; user can override in pick
         'ts':            datetime.datetime.utcnow().isoformat(),
     }
 

@@ -292,6 +292,10 @@ def log_trade_outcome(market: dict, action: str, size_usdc: float, edge: float, 
                 "uw":         market.get("_has_uw", False),
             },
             "uw_boost":     market.get("_uw_boosted", False),  # did UW boost the edge?
+            "signal_source":    market.get("_signal_source", "BOT_INDEPENDENT"),  # BOT_INDEPENDENT | DK_ALPHA | MANUAL | HYBRID | HEADLINE | NOISE
+            "confidence_bucket": market.get("_confidence_bucket", "B"),            # A_PLUS | B | C | D | F
+            "pre_trade_checklist": market.get("_pre_trade_checklist", {}),         # dict of checklist answers
+            "bucket":           market.get("_bucket", classify_bucket(market.get("question",""))),
             "volume_24h":   market.get("volume", 0),
             "end_date":     market.get("end_date", ""),
             "mode":         market.get("_mode", "NORMAL"),
@@ -553,6 +557,40 @@ def classify_bucket(title: str) -> str:
     if any(k in t for k in geo_kw):
         return 'GEO'
     return 'GEO'  # default: treat unknown as geo (smaller size)
+
+KILL_SWITCH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kill_switches.json")
+
+def load_kill_switches() -> dict:
+    """Load per-category and per-signal-source kill switch state."""
+    if not os.path.exists(KILL_SWITCH_FILE):
+        return {}
+    try:
+        with open(KILL_SWITCH_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_kill_switches(ks: dict):
+    with open(KILL_SWITCH_FILE, 'w') as f:
+        json.dump(ks, f, indent=2)
+
+def check_kill_switch(bucket: str, signal_source: str, ks: dict) -> tuple[bool, str]:
+    """
+    Returns (blocked: bool, reason: str).
+    Checks kill switch for given bucket and signal source.
+    """
+    for key in [bucket, signal_source, f"{bucket}:{signal_source}"]:
+        entry = ks.get(key, {})
+        if entry.get("paused"):
+            reason = entry.get("reason", "kill switch active")
+            expires = entry.get("expires_ts", 0)
+            if expires == 0 or time.time() < expires:
+                return True, f"[KILL-SWITCH] {key} paused: {reason}"
+            else:
+                # Expired — auto-clear
+                entry["paused"] = False
+    return False, ""
+
 PROFIT_LOCK_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profit_locks.json")
 MAX_PER_MARKET_USDC   = 200   # Never put more than $200 into a single market
 MIN_FREE_BALANCE      = 20    # Always keep $20 free (Polymarket minimum)
@@ -3807,8 +3845,59 @@ def run_cycle(client, state):
             size = min(size, BUCKET_GEO_MAX_USDC)
             log(f"  [BUCKET:GEO] Size capped at ${BUCKET_GEO_MAX_USDC} (asymmetric edge)", Fore.CYAN)
         # SPORTS: no extra cap — grind edge, scale with mode/Kelly naturally
+
+        # ── Auto-detect signal source ────────────────────────────────────────────
+        _title_for_src = m.get('question','') + ' ' + m.get('title','')
+        if m.get('_uw_boosted') or m.get('_uw_yes_sig') or m.get('_uw_no_sig'):
+            _sig_src = 'HYBRID'  # UW + bot scan = hybrid
+        elif _mkt_bucket == 'SPORTS':
+            # Sports trades without UW signal = bot attempting independent sports call
+            _sig_src = 'BOT_INDEPENDENT'
+        elif m.get('_has_pplx') or m.get('_has_rss'):
+            _sig_src = 'BOT_INDEPENDENT'
+        else:
+            _sig_src = 'BOT_INDEPENDENT'  # default: scanner generated it
+
+        m["_signal_source"]  = _sig_src
+        m["_bucket"]         = _mkt_bucket
+        m["_confidence_bucket"] = "B"  # default; A+ requires whale consensus or UW signal
+        if m.get('_source_count', 1) >= 3 or m.get('_uw_boosted'):
+            m["_confidence_bucket"] = "A_PLUS"
+        elif m.get('_source_count', 1) == 1 and _mkt_bucket in ('CALENDAR', 'GEO'):
+            m["_confidence_bucket"] = "C"
+
+        # ── Pre-trade checklist (logged, not blocking) ─────────────────────────
+        _yes_price = m.get('yes_price', 0.5)
+        _no_price  = m.get('no_price', 0.5)
+        _fair_val  = m.get('true_probability', _yes_price)
+        _edge_val  = m.get('edge', 0)
+        _checklist = {
+            "q1_market_belief": f"Market prices YES at {_yes_price:.3f}",
+            "q2_our_belief":    f"We estimate fair value {_fair_val:.3f} (edge {_edge_val:+.3f})",
+            "q3_signal_source": _sig_src,
+            "q4_evidence":      m.get('reasoning','')[:150],
+            "q5_fair_value":    round(_fair_val, 3),
+            "q6_target_entry":  round(_yes_price if action == 'BUY_YES' else _no_price, 3),
+            "q7_target_exit":   round(min(_fair_val + 0.15, 0.92), 3),
+            "q8_thesis_invalid": "Price moves against entry by 30%+ without new information",
+            "q9_max_loss":      round(size, 2),
+            "q10_trade_type":   _mkt_bucket,
+            "q11_category":     _mkt_bucket,
+            "q12_position_size": round(size, 2),
+            "q13_fresh_or_chase": "fresh" if abs(_edge_val) > 0.10 else "possible_chase",
+        }
+        m["_pre_trade_checklist"] = _checklist
+        log(f"  [CHECKLIST] src={_sig_src} | conf={m['_confidence_bucket']} | type={_mkt_bucket} | fresh={'Y' if _checklist['q13_fresh_or_chase']=='fresh' else 'N'}", Fore.MAGENTA)
+
         if size < SIZE_MIN[mode]:
             log(f"  Skipping — size ${size:.2f} below mode minimum ${SIZE_MIN[mode]}", Fore.YELLOW)
+            continue
+
+        # ── Kill switch check ──────────────────────────────────────────
+        _ks = load_kill_switches()
+        _ks_blocked, _ks_reason = check_kill_switch(_mkt_bucket, _sig_src, _ks)
+        if _ks_blocked:
+            log(f"  {_ks_reason} — skipping {m['question'][:50]}", Fore.RED)
             continue
 
         receipt = place_trade(client, m, action, size)

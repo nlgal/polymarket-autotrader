@@ -1,14 +1,19 @@
 """
 trade_grader.py — Post-Trade Grade Engine (Karpathy Loop v2)
 =============================================================
-For every newly-closed market, asks Claude to grade the trade on 6 dimensions:
+For every newly-closed market, asks Claude to grade the trade on 11 dimensions:
 
-  1. Thesis quality     — was the reasoning correct?
-  2. Entry quality      — good price, chased, or too early?
-  3. Exit quality       — took profit / held correctly / sold too early / decayed?
-  4. Position sizing    — appropriate for confidence, liquidity, time, downside?
-  5. Market type        — repeatable | asymmetric | calendar | headline | noise
-  6. Closing lesson     — one sentence the bot should remember
+  1.  Thesis quality       — was the reasoning correct?
+  2.  Entry quality        — good price, chased, or too early?
+  3.  Exit quality         — took profit / held correctly / sold too early / decayed?
+  4.  Position sizing      — appropriate for confidence, liquidity, time, downside?
+  5.  Market type          — repeatable | asymmetric | calendar | headline | noise
+  6.  Closing lesson       — one sentence the bot should remember
+  7.  Thesis source        — BOT_INDEPENDENT | DK_ALPHA | MANUAL | HYBRID | HEADLINE | NOISE
+  8.  Bot contribution     — what did the bot actually add?
+  9.  Process quality      — was it a good trade regardless of outcome?
+  10. Closing-line value   — did price move in our favor after entry?
+  11. Confidence bucket    — what confidence grade should have been assigned at entry?
 
 Grades are written to:
   /opt/polymarket-agent/intelligence/post_trade_reviews.jsonl  (structured, read by optimizer)
@@ -101,12 +106,13 @@ def append_review(record: dict):
     with open(REVIEW_FILE, 'a') as f:
         f.write(json.dumps(record) + '\n')
 
-def append_lesson(title: str, lesson: str, bucket: str, pnl: float, grade_overall: str):
+def append_lesson(title: str, lesson: str, bucket: str, pnl: float,
+                  grade_overall: str, signal_source: str, clv: str):
     """Append one lesson line to lessons.md (read by autotrader/scanner)."""
     date = datetime.datetime.utcnow().strftime('%Y-%m-%d')
     sign = '+' if pnl >= 0 else ''
     with open(LESSONS_FILE, 'a') as f:
-        f.write(f"\n## [{date}] [{bucket}] [{grade_overall}] ${sign}{pnl:.0f}\n")
+        f.write(f"\n## [{date}] [{bucket}] [{signal_source}] [{grade_overall}] [{clv}] ${sign}{pnl:.0f}\n")
         f.write(f"**Market:** {title}\n")
         f.write(f"**Lesson:** {lesson}\n")
 
@@ -217,7 +223,7 @@ def fetch_closed_markets(limit: int = 500) -> list:
 # ── Claude grader ─────────────────────────────────────────────────────────────
 def grade_trade_claude(trade: dict) -> dict | None:
     """
-    Ask Claude to grade a single closed trade on 6 dimensions.
+    Ask Claude to grade a single closed trade on 11 dimensions.
     Returns structured grade dict or None on failure.
     """
     if not ANTHROPIC_KEY:
@@ -250,7 +256,7 @@ def grade_trade_claude(trade: dict) -> dict | None:
     else:
         exit_note = f"Exit at {trade['avg_exit']:.3f} vs entry {trade['avg_entry']:.3f}"
 
-    prompt = f"""You are grading a closed Polymarket prediction market trade. Grade it across 6 dimensions. Be blunt and precise — this feeds a learning loop.
+    prompt = f"""You are grading a closed Polymarket prediction market trade. Grade it across 11 dimensions. Be blunt and precise — this feeds a learning loop.
 
 TRADE DETAILS:
   Market: {trade['title']}
@@ -260,9 +266,40 @@ TRADE DETAILS:
   Cost: ${trade['total_cost']:.2f}  →  Proceeds: ${trade['total_proceeds']:.2f}
   Realized P&L: ${pnl:+.2f} ({pnl_pct:+.1f}%)
   Days held: {trade['days_held']:.1f}
+  Buy count: {trade['buy_count']}
   {entry_note}
   {exit_note}
   Redeemed at resolution: {redeemed}
+
+SIGNAL SOURCE CLASSIFICATION RULES:
+- BOT_INDEPENDENT: bot found the opportunity via opportunity_scanner.py with no DK or user input
+- DK_ALPHA: trade was triggered by a DraftKings signal (dk_picks.json or live_sports_trader.py)
+- MANUAL: user explicitly directed the trade in conversation
+- HYBRID: combination of bot analysis + DK signal OR bot + user direction
+- HEADLINE: reaction to breaking news/event without deeper thesis
+- NOISE: no identifiable thesis
+
+SIGNAL SOURCE HEURISTICS (use as guidance, apply judgment):
+- If bucket == SPORTS and days_held < 1: likely DK_ALPHA (same-day sports resolution)
+- If bucket == SPORTS and days_held > 3: likely BOT_INDEPENDENT or MANUAL
+- If bucket == CALENDAR: likely BOT_INDEPENDENT thesis
+- If bucket == GEO and total_cost < 150: likely BOT_INDEPENDENT (under geo cap)
+- If buy_count == 1 and total_cost > 200: possibly MANUAL (single large entry)
+
+CLOSING-LINE VALUE (CLV) ESTIMATION — use these rules since we lack intraday price history:
+- If redeemed and pnl > 0: CLV is POSITIVE (price moved to 1.0)
+- If redeemed and pnl < 0: CLV is NEGATIVE (held to zero)
+- If avg_exit > avg_entry and pnl > 0: CLV likely POSITIVE
+- If avg_exit < avg_entry: CLV is NEGATIVE
+- If pnl_pct > 20% in < 3 days: CLV likely POSITIVE
+- Otherwise: UNKNOWN
+
+CONFIDENCE BUCKET — retroactively assign the confidence bucket that SHOULD have been used at entry (not what was used):
+- A+: clear market mispricing, strong thesis, good liquidity, time to resolution > 7 days, repeatable edge
+- B: reasonable thesis with some uncertainty
+- C: speculative, thin liquidity, or timing-dependent
+- D: watchlist only — no trade should have been made
+- F: noise trade — should never have been entered
 
 GRADING RUBRIC:
 Return ONLY a JSON object with exactly these fields (no prose, no markdown):
@@ -278,8 +315,19 @@ Return ONLY a JSON object with exactly these fields (no prose, no markdown):
   "sizing_note": "1 sentence on whether size matched confidence, liquidity, and time to resolution",
   "market_type": "REPEATABLE_EDGE | ASYMMETRIC_THESIS | CALENDAR_SPREAD | HEADLINE_CHASE | PURE_NOISE",
   "primary_failure_mode": "none | late_entry | position_too_large | position_too_small | early_exit | held_loser | wrong_thesis | calendar_timing | headline_chase | spread_mismatch",
-  "closing_lesson": "ONE sentence the bot should remember for the next similar trade. Start with an action verb.",
-  "grade_overall": "A | B | C | D | F"
+  "closing_lesson": "ONE sentence starting with signal source tag e.g. [BOT_INDEPENDENT] followed by an action verb and lesson the bot should remember for the next similar trade.",
+  "grade_overall": "A | B | C | D | F",
+  "thesis_source": "BOT_INDEPENDENT | DK_ALPHA | MANUAL | HYBRID | HEADLINE | NOISE",
+  "thesis_source_note": "1 sentence explaining how this was classified",
+  "bot_contribution": "GENERATED_THESIS | IMPROVED_ENTRY | IMPROVED_EXIT | IMPROVED_SIZING | FOUND_CORRELATED | AVOIDED_WORSE | FOLLOWED_SIGNAL | UNCLEAR",
+  "bot_contribution_note": "1 sentence on what the bot actually added",
+  "process_quality": "GOOD | ACCEPTABLE | POOR | VERY_POOR",
+  "process_quality_note": "1 sentence — was it a good trade regardless of outcome?",
+  "outcome_quality": "WIN | BREAKEVEN | LOSS",
+  "closing_line_value": "POSITIVE | NEGATIVE | NEUTRAL | UNKNOWN",
+  "closing_line_note": "Did price move in our favor after entry? If unknown, say UNKNOWN.",
+  "confidence_bucket": "A_PLUS | B | C | D | F",
+  "confidence_note": "What confidence grade should have been assigned at entry?"
 }}
 
 Grade A = profitable AND process was correct (right thesis, good entry, correct exit, right size)
@@ -291,6 +339,10 @@ Grade F = large loss AND process was wrong on multiple dimensions
 For CALENDAR bucket: be extra harsh on sizing — calendar spreads should be small.
 For GEO bucket: if thesis was correct and pnl positive, credit the asymmetry.
 For SPORTS bucket: focus on whether the entry price was +EV relative to the closing line.
+
+The closing_lesson field MUST start with the signal source tag in brackets, e.g.:
+  "[BOT_INDEPENDENT] Avoid entering SPORTS markets after line movement exceeds 5 cents."
+  "[DK_ALPHA] Follow DK signals only when Polymarket price lags by > 8 cents."
 
 Return ONLY the JSON. No explanation outside the JSON."""
 
@@ -304,7 +356,7 @@ Return ONLY the JSON. No explanation outside the JSON."""
             },
             json={
                 "model": "claude-haiku-4-5",
-                "max_tokens": 600,
+                "max_tokens": 900,
                 "messages": [{"role": "user", "content": prompt}]
             },
             timeout=30
@@ -385,7 +437,9 @@ def run_grader(max_new: int = 10, send_summary: bool = True) -> int:
             lesson=grade.get('closing_lesson', '(no lesson)'),
             bucket=bucket,
             pnl=pnl,
-            grade_overall=grade.get('grade_overall', '?')
+            grade_overall=grade.get('grade_overall', '?'),
+            signal_source=grade.get('thesis_source', 'UNKNOWN'),
+            clv=grade.get('closing_line_value', 'UNKNOWN'),
         )
 
         # Mark as graded
@@ -415,8 +469,10 @@ def run_grader(max_new: int = 10, send_summary: bool = True) -> int:
             pnl  = r['realized_pnl']
             sign = '+' if pnl >= 0 else ''
             fm   = r.get('primary_failure_mode', 'none')
+            src  = r.get('thesis_source', '?')
+            clv  = r.get('closing_line_value', '?')
             lines.append(
-                f"{icon} <b>[{r['bucket']}] {g}</b> {sign}${pnl:.0f}\n"
+                f"{icon} <b>[{r['bucket']}] [{src}] {g}</b> {sign}${pnl:.0f}\n"
                 f"  {r['title'][:50]}\n"
                 f"  {r.get('closing_lesson','')[:100]}"
             )
@@ -435,6 +491,42 @@ def run_grader(max_new: int = 10, send_summary: bool = True) -> int:
             lines.append("🔍 <b>Failure modes this batch:</b>")
             for fm, cnt in sorted(fm_counts.items(), key=lambda x: -x[1]):
                 lines.append(f"  • {fm}: {cnt}x")
+            lines.append("")
+
+        # Signal source breakdown
+        src_counts = {}
+        for r in graded_this_run:
+            src = r.get('thesis_source', 'UNKNOWN')
+            src_counts[src] = src_counts.get(src, 0) + 1
+
+        if src_counts:
+            lines.append("📡 <b>Signal sources this batch:</b>")
+            for src, cnt in sorted(src_counts.items(), key=lambda x: -x[1]):
+                lines.append(f"  • {src}: {cnt}x")
+            lines.append("")
+
+        # Process quality summary
+        pq_counts = {}
+        for r in graded_this_run:
+            pq = r.get('process_quality', 'UNKNOWN')
+            pq_counts[pq] = pq_counts.get(pq, 0) + 1
+
+        if pq_counts:
+            lines.append("⚙️ <b>Process quality this batch:</b>")
+            for pq, cnt in sorted(pq_counts.items(), key=lambda x: -x[1]):
+                lines.append(f"  • {pq}: {cnt}x")
+            lines.append("")
+
+        # Closing-line value summary
+        clv_counts = {}
+        for r in graded_this_run:
+            clv = r.get('closing_line_value', 'UNKNOWN')
+            clv_counts[clv] = clv_counts.get(clv, 0) + 1
+
+        if clv_counts:
+            lines.append("📈 <b>Closing-line value this batch:</b>")
+            for clv, cnt in sorted(clv_counts.items(), key=lambda x: -x[1]):
+                lines.append(f"  • {clv}: {cnt}x")
 
         tg("\n".join(lines))
 
