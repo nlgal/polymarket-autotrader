@@ -25,11 +25,24 @@ try:    creds = client.create_or_derive_api_key()
 except: creds = client.derive_api_key()
 client.set_api_creds(creds)
 
-# Get current mid price
-mid_r = requests.get(f"https://clob.polymarket.com/midpoint?token_id={TOKEN}", timeout=8)
-mid   = float(mid_r.json().get("mid", 0.50))
-tick_r = requests.get(f"https://clob.polymarket.com/tick-size?token_id={TOKEN}", timeout=8)
-tick  = float(tick_r.json().get("minimum_tick_size", 0.01))
+# Get current mid price — try SDK first, fall back to REST
+try:
+    mid = float(client.get_midpoint(TOKEN).get("mid", 0.50))
+except Exception:
+    try:
+        mid_r = requests.get(f"https://clob.polymarket.com/midpoint?token_id={TOKEN}", timeout=8)
+        mid   = float(mid_r.json().get("mid", 0.50))
+    except Exception:
+        mid = 0.50  # fallback: sell at mid if API unavailable
+
+try:
+    tick = float(client.get_tick_size(TOKEN))
+except Exception:
+    try:
+        tick_r = requests.get(f"https://clob.polymarket.com/tick-size?token_id={TOKEN}", timeout=8)
+        tick   = float(tick_r.json().get("minimum_tick_size", 0.01))
+    except Exception:
+        tick = 0.01  # default tick size
 
 # Sell just below mid to get filled quickly (1 tick below)
 price = max(round((round(mid / tick) - 1) * tick, 6), 0.01)
