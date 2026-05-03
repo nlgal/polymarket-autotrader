@@ -1125,11 +1125,19 @@ def get_equity(client):
 
 def get_portfolio_stats(client):
     try:
-        from py_clob_client_v2.clob_types import OpenOrderParams
-        orders = client.get_orders(OpenOrderParams())
+        # V2 SDK ClobClient does not expose get_orders — use REST API directly
+        import os as _os
+        _funder = _os.environ.get("POLYMARKET_FUNDER_ADDRESS", "").strip()
+        _r = requests.get(
+            f"https://clob.polymarket.com/orders?maker={_funder}&status=OPEN&limit=50",
+            timeout=10
+        )
+        orders = _r.json() if _r.ok else []
+        if isinstance(orders, dict):
+            orders = orders.get("data", [])
         open_count = len(orders)
         deployed = sum(
-            float(o["original_size"]) * float(o["price"])
+            float(o.get("original_size", 0)) * float(o.get("price", 0))
             for o in orders
         )
         return {"open_orders": open_count, "deployed": deployed}
@@ -2185,13 +2193,19 @@ def calculate_size(edge, mode, equity_now, deployed, market_price=0.5, source_co
 # ── Order Management ─────────────────────────────────────────────────────────
 
 def cancel_and_resubmit_stale_orders(client, current_markets_by_token):
-    from py_clob_client_v2.clob_types import OpenOrderParams
-
     freed_usdc   = 0.0
     resubmitted  = 0
 
     try:
-        orders = client.get_orders(OpenOrderParams())
+        # V2 SDK ClobClient does not expose get_orders — use REST API directly
+        _funder = os.environ.get("POLYMARKET_FUNDER_ADDRESS", "").strip()
+        _r = requests.get(
+            f"https://clob.polymarket.com/orders?maker={_funder}&status=OPEN&limit=100",
+            timeout=10
+        )
+        orders = _r.json() if _r.ok else []
+        if isinstance(orders, dict):
+            orders = orders.get("data", [])
     except Exception as e:
         log(f"Could not fetch open orders: {e}", Fore.YELLOW)
         return freed_usdc
@@ -2483,18 +2497,16 @@ def run_oracle_checks(client):
             # Execute the sell
             try:
                 from py_clob_client_v2.order_builder.constants import SELL as _SELL
-                from py_clob_client_v2.clob_types import OrderArgs as _OA, OrderType as _OT, PartialCreateOrderOptions as _PCO
+                from py_clob_client_v2.clob_types import OrderArgs as _OA, OrderType as _OT
                 _book = client.get_midpoint(token_id)
                 _mid  = float(_book.get("mid", 0.5))
                 _tick     = client.get_tick_size(token_id)
-                _neg_risk = client.get_neg_risk(token_id)
                 _tick_f   = float(_tick)
                 _tick_dec = len(str(_tick).rstrip("0").split(".")[-1]) if "." in str(_tick) else 0
                 _sp = round(round(_mid / _tick_f) * _tick_f, _tick_dec)
                 _sp = max(0.01, min(0.99, _sp))
                 _args = _OA(token_id=token_id, price=_sp, size=round(size, 2), side=_SELL)
-                _opts = _PCO(tick_size=_tick, neg_risk=_neg_risk)
-                _signed  = client.create_order(_args, _opts)
+                _signed  = client.create_order(_args)  # plain — no neg_risk options (avoids allowance error)
                 _receipt = client.post_order(_signed, _OT.GTC)
                 if _receipt.get("success"):
                     avg_p = float(p.get("avgPrice", 0) or 0)
@@ -2705,18 +2717,16 @@ def _execute_thesis_sell(client, token_id: str, shares: float, reason: str):
     """Execute a market sell for thesis invalidation."""
     try:
         from py_clob_client_v2.order_builder.constants import SELL
-        from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType
         book = client.get_midpoint(token_id)
         cur_price = float(book.get("mid", 0.5))
         tick      = client.get_tick_size(token_id)
-        neg_risk  = client.get_neg_risk(token_id)
         tick_f    = float(tick)
         tick_dec  = len(str(tick).rstrip("0").split(".")[-1]) if "." in str(tick) else 0
         sell_price = round(round(cur_price / tick_f) * tick_f, tick_dec)
         sell_price = max(0.01, min(0.99, sell_price))
         args       = OrderArgs(token_id=token_id, price=sell_price, size=round(shares, 2), side=SELL)
-        options    = PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk)
-        signed     = client.create_order(args, options)
+        signed     = client.create_order(args)  # plain — no neg_risk options (avoids allowance error)
         receipt    = client.post_order(signed, OrderType.GTC)
         if receipt.get("success"):
             log(f"[THESIS] Sold @ {sell_price:.3f} | {reason[:80]}", Fore.GREEN)
@@ -2900,16 +2910,14 @@ def manage_positions(client):
                 tg(f"🔒 <b>Profit-lock: selling half</b>\nNO gain {gain_pct*100:.0f}% (entry {no_entry:.3f} → now {no_current:.3f})\nSelling {half_shares} of {shares:.0f} shares to lock gain")
                 try:
                     from py_clob_client_v2.order_builder.constants import SELL as _SELL
-                    from py_clob_client_v2.clob_types import OrderArgs as _OA, OrderType as _OT, PartialCreateOrderOptions as _PCO
+                    from py_clob_client_v2.clob_types import OrderArgs as _OA, OrderType as _OT
                     _tick     = client.get_tick_size(token_id)
-                    _neg_risk = client.get_neg_risk(token_id)
                     _tick_f   = float(_tick)
                     _tick_dec = len(str(_tick).rstrip("0").split(".")[-1]) if "." in str(_tick) else 0
                     _sp = round(round(current_price / _tick_f) * _tick_f, _tick_dec)
                     _sp = max(0.01, min(0.99, _sp))
                     _args = _OA(token_id=token_id, price=_sp, size=half_shares, side=_SELL)
-                    _opts = _PCO(tick_size=_tick, neg_risk=_neg_risk)
-                    _signed  = client.create_order(_args, _opts)
+                    _signed  = client.create_order(_args)  # plain — no neg_risk options (avoids allowance error)
                     _receipt = client.post_order(_signed, _OT.GTC)
                     if _receipt.get("success"):
                         _pnl = (_sp - avg_entry) * half_shares
@@ -2929,9 +2937,8 @@ def manage_positions(client):
             log(f"SELL SIGNAL: {reason}", Fore.CYAN)
             try:
                 from py_clob_client_v2.order_builder.constants import SELL
-                from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+                from py_clob_client_v2.clob_types import OrderArgs, OrderType
                 tick     = client.get_tick_size(token_id)
-                neg_risk = client.get_neg_risk(token_id)
                 tick_f   = float(tick)
                 tick_dec = len(str(tick).rstrip("0").split(".")[-1]) if "." in str(tick) else 0
                 sell_price = round(round(current_price / tick_f) * tick_f, tick_dec)
@@ -2955,8 +2962,7 @@ def manage_positions(client):
                     log(f"  Sell size {sell_size} too small — skipping (token may be expired)", Fore.YELLOW)
                     continue
                 args    = OrderArgs(token_id=token_id, price=sell_price, size=sell_size, side=SELL)
-                options = PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk)
-                signed  = client.create_order(args, options)
+                signed  = client.create_order(args)  # plain — no neg_risk options (avoids allowance error)
                 receipt = client.post_order(signed, OrderType.GTC)
                 if receipt.get("success"):
                     pnl = (sell_price - avg_entry) * sell_size

@@ -204,9 +204,18 @@ def get_midpoint(client, token_id):
         return None
 
 def get_open_orders(client):
+    """Fetch open orders via REST API (V2 SDK ClobClient lacks get_orders method)."""
     try:
-        from py_clob_client_v2.clob_types import OpenOrderParams
-        return client.get_orders(OpenOrderParams()) or []
+        import os as _os
+        funder = _os.environ.get("POLYMARKET_FUNDER_ADDRESS", "").strip()
+        r = requests.get(
+            f"https://clob.polymarket.com/orders?maker={funder}&status=OPEN&limit=100",
+            timeout=10
+        )
+        data = r.json() if r.ok else []
+        if isinstance(data, dict):
+            data = data.get("data", [])
+        return data or []
     except Exception as e:
         log(f"Open orders error: {e}")
         return []

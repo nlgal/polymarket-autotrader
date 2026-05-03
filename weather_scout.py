@@ -39,6 +39,7 @@ WEATHER_MIN_HOURS_LEFT  = 6.0     # Market must have ≥6h before close
 # Add extra buffer to account for unresolved model error.
 WEATHER_ENSEMBLE_COLLAPSE_STD = 0.5   # °C — below this, ensemble is "collapsed"
 WEATHER_COLLAPSE_BUFFER       = 1.0   # °C extra buffer to add when collapsed
+WEATHER_STALE_RUN_HOURS       = 3.0   # Hours into ECMWF run window before applying stale penalty
 
 # ── City reliability tiers ────────────────────────────────────────────────────
 # TIER A: Reliable interiors, low convective uncertainty (dense obs network)
