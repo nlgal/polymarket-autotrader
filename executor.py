@@ -209,6 +209,7 @@ ALLOWED_SCRIPTS = {
     "check_v2_methods.py",
     "patch_sell_shares.py",
     "trade_grader.py",
+    "daily_weekly_report.py",
 }
 
 
